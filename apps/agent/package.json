@@ -1,0 +1,16 @@
+{
+  "name": "agent",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+   "scripts": {
+    "dev": "bun run ./src/index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^25.2.3"
+  },
+  "peerDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

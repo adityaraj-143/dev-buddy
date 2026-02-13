@@ -1,0 +1,21 @@
+{
+  "name": "dev-buddy",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev:agent": "cd apps/agent && bun run dev",
+    "dev:ui": "cd apps/ui && bun run dev",
+    "build": "echo build later"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
