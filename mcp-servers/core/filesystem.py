@@ -233,8 +233,8 @@ async def serve(
                 )
             )
 
-        path = str(uri).replace("file://", "", 1)
-
+        raw_path = uri.path or ""
+        path = raw_path.lstrip("/")        
         if not is_safe_path(root_path, path):
             raise McpError(
                 types.ErrorData(

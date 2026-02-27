@@ -34,3 +34,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .DS_Store
 
 .vscode
+
+mcp-servers/core/.venv/
+mcp-servers/core/mcp_test.txt
+mcp-servers/core/filesystem_test.py
