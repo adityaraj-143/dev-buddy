@@ -110,7 +110,7 @@ class MCPClient {
         });
 
         finalText.push(
-          response.content[0].type === 'text' ? response.content[0].text : '',
+          response.content[0]?.type === 'text' ? response.content[0].text : '',
         );
       }
     }
