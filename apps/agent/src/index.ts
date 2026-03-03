@@ -27,7 +27,6 @@ class MCPClient {
     });
     this.mcp = new Client({ name: 'mcp-client-cli', version: '1.0.0' });
   }
-  // methods will go here
 
   async connectToServer(serverScriptPath: string) {
     try {
@@ -116,5 +115,32 @@ class MCPClient {
     }
 
     return finalText.join('\n');
+  }
+
+  async chatLoop() {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    try {
+      console.log('\nMCP Client Started!');
+      console.log("Type your queries or 'quit' to exit.");
+
+      while (true) {
+        const message = await rl.question('\nQuery: ');
+        if (message.toLowerCase() === 'quit') {
+          break;
+        }
+        const response = await this.processQuery(message);
+        console.log('\n' + response);
+      }
+    } finally {
+      rl.close();
+    }
+  }
+
+  async cleanup() {
+    await this.mcp.close();
   }
 }
