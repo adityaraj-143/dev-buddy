@@ -30,20 +30,16 @@ class MCPClient {
 
   async connectToServer(serverScriptPath: string) {
     try {
-      const isJs = serverScriptPath.endsWith('.js');
       const isPy = serverScriptPath.endsWith('.py');
-      if (!isJs && !isPy) {
-        throw new Error('Server script must be a .js or .py file');
+      if (!isPy) {
+        throw new Error('Server script must be a .py file');
       }
-      const command = isPy
-        ? process.platform === 'win32'
-          ? 'python'
-          : 'python3'
-        : process.execPath;
+      const command = isPy ? 'uv' : process.execPath;
 
       this.transport = new StdioClientTransport({
-        command,
-        args: [serverScriptPath],
+        command: 'uv',
+        args: ['run', 'python', 'filesystem.py', '.'],
+        cwd: '../../mcp-servers/core',
       });
       await this.mcp.connect(this.transport);
 
@@ -144,3 +140,24 @@ class MCPClient {
     await this.mcp.close();
   }
 }
+
+async function main() {
+  if (process.argv.length < 3) {
+    console.log('Usage: bun run index.ts <path_to_server_script>');
+    return;
+  }
+  const mcpClient = new MCPClient();
+  try {
+    await mcpClient.connectToServer(process.argv[2]!);
+    await mcpClient.chatLoop();
+  } catch (e) {
+    console.error('Error:', e);
+    await mcpClient.cleanup();
+    process.exit(1);
+  } finally {
+    await mcpClient.cleanup();
+    process.exit(0);
+  }
+}
+
+main();
