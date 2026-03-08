@@ -60,6 +60,10 @@ class GitReset(GitBase):
     pass
 
 
+class GitInit(GitBase):
+    pass
+
+
 class GitLog(GitBase):
     max_count: int = 10
     start_timestamp: Optional[str] = Field(
@@ -101,6 +105,7 @@ class GitBranch(GitBase):
 
 
 class GitTools(str, Enum):
+    INIT = "git_init"
     STATUS = "git_status"
     DIFF_UNSTAGED = "git_diff_unstaged"
     DIFF_STAGED = "git_diff_staged"
@@ -157,6 +162,20 @@ def git_add(repo: git.Repo, files: list[str]) -> str:
 def git_reset(repo: git.Repo) -> str:
     repo.index.reset()
     return "All staged changes reset"
+
+
+def git_init(repo_path: Path) -> str:
+    if repo_path.exists() and repo_path.is_file():
+        raise ValueError(f"Path is a file, expected directory: {repo_path}")
+
+    repo_path.mkdir(parents=True, exist_ok=True)
+
+    try:
+        git.Repo(repo_path)
+        return f"Git repository already exists at {repo_path}"
+    except git.InvalidGitRepositoryError:
+        git.Repo.init(repo_path)
+        return f"Initialized empty Git repository at {repo_path}"
 
 
 def git_log(
@@ -329,6 +348,11 @@ async def serve(repository: Path | None) -> None:
     async def list_tools() -> list[Tool]:
         return [
             Tool(
+                name=GitTools.INIT,
+                description="Initialize an empty Git repository",
+                inputSchema=GitInit.model_json_schema(),
+            ),
+            Tool(
                 name=GitTools.STATUS,
                 description="Shows the working tree status",
                 inputSchema=GitStatus.model_json_schema(),
@@ -428,6 +452,10 @@ async def serve(repository: Path | None) -> None:
 
         # Validate repo_path is within allowed repository
         validate_repo_path(repo_path, repository)
+
+        if name == GitTools.INIT:
+            result = git_init(repo_path)
+            return [TextContent(type="text", text=result)]
 
         # For all commands, we need an existing repo
         if not repo_path.exists():
