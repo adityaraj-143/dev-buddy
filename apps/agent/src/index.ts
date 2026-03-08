@@ -227,7 +227,7 @@ async function main() {
     {
       id: 'git',
       command: 'uv',
-      args: ['run', 'python', 'git_tools.py', gitRepo],
+      args: ['run', 'python', 'gitTools.py', gitRepo],
       cwd: coreCwd,
     },
   ];
