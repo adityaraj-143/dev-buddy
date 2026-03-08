@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from pathlib import Path
 from typing import Sequence, Optional
 from mcp.server import Server
@@ -519,3 +520,21 @@ async def serve(repository: Path | None) -> None:
     options = server.create_initialization_options()
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, options, raise_exceptions=True)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Run MCP Git tools server over stdio"
+    )
+    parser.add_argument(
+        "repository",
+        nargs="?",
+        default=None,
+        help="Optional repository path to allow access under",
+    )
+    parsed = parser.parse_args()
+
+    repo = Path(parsed.repository).resolve() if parsed.repository else None
+    asyncio.run(serve(repo))

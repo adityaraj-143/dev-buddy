@@ -3,58 +3,119 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import readline from 'readline/promises';
 import dotenv from 'dotenv';
+import path from 'path';
 
 dotenv.config();
 
+type ServerConfig = {
+  id: string;
+  command: string;
+  args: string[];
+  cwd: string;
+};
+
+type ConnectedServer = {
+  id: string;
+  client: Client;
+  transport: StdioClientTransport;
+};
+
 class MCPClient {
-  private mcp: Client;
   private openai: OpenAI;
-  private transport: StdioClientTransport | null = null;
+  private servers: ConnectedServer[] = [];
+  private toolToServer = new Map<
+    string,
+    { client: Client; toolName: string; serverId: string }
+  >();
   private tools: any[] = [];
 
   constructor() {
     this.openai = new OpenAI({
-      baseURL: 'http://localhost:11434/v1',
+      baseURL: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1',
       apiKey: 'ollama', // required but unused
     });
-
-    this.mcp = new Client({ name: 'mcp-client-cli', version: '1.0.0' });
   }
 
-  async connectToServer(serverScriptPath: string) {
-    try {
-      const isPy = serverScriptPath.endsWith('.py');
-      if (!isPy) {
-        throw new Error('Server script must be a .py file');
+  private registerServerTools(serverId: string, client: Client, tools: any[]) {
+    for (const tool of tools) {
+      if (this.toolToServer.has(tool.name)) {
+        console.warn(
+          `Skipping duplicate tool '${tool.name}' from '${serverId}'`,
+        );
+        continue;
       }
 
-      this.transport = new StdioClientTransport({
-        command: 'uv',
-        args: ['run', 'python', 'filesystem.py', '.'],
-        cwd: '../../mcp-servers/core',
+      this.toolToServer.set(tool.name, {
+        client,
+        toolName: tool.name,
+        serverId,
       });
 
-      await this.mcp.connect(this.transport);
-
-      const toolsResult = await this.mcp.listTools();
-
-      this.tools = toolsResult.tools.map((tool) => ({
+      this.tools.push({
         type: 'function',
         function: {
           name: tool.name,
           description: tool.description,
           parameters: tool.inputSchema,
         },
-      }));
-
-      console.log(
-        'Connected to server with tools:',
-        this.tools.map((t) => t.function.name),
-      );
-    } catch (e) {
-      console.log('Failed to connect to MCP server:', e);
-      throw e;
+      });
     }
+  }
+
+  async connectToServers(serverConfigs: ServerConfig[]) {
+    for (const config of serverConfigs) {
+      const client = new Client({
+        name: `mcp-client-cli-${config.id}`,
+        version: '1.0.0',
+      });
+      const transport = new StdioClientTransport({
+        command: config.command,
+        args: config.args,
+        cwd: config.cwd,
+      });
+
+      try {
+        await client.connect(transport);
+        const toolsResult = await client.listTools();
+        this.registerServerTools(config.id, client, toolsResult.tools);
+        this.servers.push({ id: config.id, client, transport });
+
+        console.log(
+          `Connected to '${config.id}' with tools:`,
+          toolsResult.tools.map((t) => t.name),
+        );
+      } catch (e) {
+        console.error(`Failed to connect to MCP server '${config.id}':`, e);
+        await client.close().catch(() => undefined);
+      }
+    }
+
+    if (this.servers.length === 0) {
+      throw new Error('No MCP servers could be connected');
+    }
+  }
+
+  private toolResultToString(content: unknown): string {
+    if (typeof content === 'string') {
+      return content;
+    }
+    if (Array.isArray(content)) {
+      return content
+        .map((item) => {
+          if (typeof item === 'string') {
+            return item;
+          }
+          if (item && typeof item === 'object' && 'text' in item) {
+            const textValue = (item as { text?: unknown }).text;
+            return typeof textValue === 'string'
+              ? textValue
+              : JSON.stringify(item);
+          }
+          return JSON.stringify(item);
+        })
+        .join('\n');
+    }
+    return JSON.stringify(content);
   }
 
   async processQuery(query: string) {
@@ -84,19 +145,24 @@ class MCPClient {
 
         const toolName = toolCall.function.name;
         const toolArgs = JSON.parse(toolCall.function.arguments);
-        const result = await this.mcp.callTool({
-          name: toolName,
+        const targetTool = this.toolToServer.get(toolName);
+        if (!targetTool) {
+          throw new Error(`No MCP server registered for tool '${toolName}'`);
+        }
+
+        const result = await targetTool.client.callTool({
+          name: targetTool.toolName,
           arguments: toolArgs,
         });
 
-        finalText += `\n[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`;
+        finalText += `\n[Calling ${targetTool.serverId}.${toolName} with args ${JSON.stringify(toolArgs)}]`;
 
         messages.push(message);
 
         messages.push({
           role: 'tool',
           tool_call_id: toolCall.id,
-          content: result.content as string,
+          content: this.toolResultToString(result.content),
         });
 
         const secondResponse = await this.openai.chat.completions.create({
@@ -139,20 +205,37 @@ class MCPClient {
   }
 
   async cleanup() {
-    await this.mcp.close();
+    await Promise.all(this.servers.map((server) => server.client.close()));
   }
 }
 
 async function main() {
-  if (process.argv.length < 3) {
-    console.log('Usage: bun run index.ts <path_to_server_script>');
-    return;
-  }
+  const repoRoot = path.resolve(process.cwd(), '../..');
+  const defaultWorkspaceRoot = path.join(repoRoot, 'workspace');
+  const coreCwd = process.env.MCP_CORE_CWD ?? '../../mcp-servers/core';
+  const filesystemRoot =
+    process.env.MCP_FILESYSTEM_ROOT ?? defaultWorkspaceRoot;
+  const gitRepo = process.env.MCP_GIT_REPO ?? repoRoot;
+
+  const serverConfigs: ServerConfig[] = [
+    {
+      id: 'filesystem',
+      command: 'uv',
+      args: ['run', 'python', 'filesystem.py', filesystemRoot],
+      cwd: coreCwd,
+    },
+    {
+      id: 'git',
+      command: 'uv',
+      args: ['run', 'python', 'git_tools.py', gitRepo],
+      cwd: coreCwd,
+    },
+  ];
 
   const mcpClient = new MCPClient();
 
   try {
-    await mcpClient.connectToServer(process.argv[2]!);
+    await mcpClient.connectToServers(serverConfigs);
     await mcpClient.chatLoop();
   } catch (e) {
     console.error('Error:', e);
