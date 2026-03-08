@@ -4,12 +4,13 @@ import pathspec
 import asyncio
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
+from mcp.server.stdio import stdio_server
 from mcp.shared.exceptions import McpError
 import mcp.types as types
-import mcp.server.stdio
-from pydantic import BaseModel, Field
+from pydantic import AnyUrl, BaseModel, Field, TypeAdapter
 
 MAX_FILE_SIZE = 2 * 1024 * 1024  # 2MBs
+URL_ADAPTER = TypeAdapter(AnyUrl)
 
 # Configuration constants
 DEFAULT_IGNORE_PATTERNS = [
@@ -199,7 +200,7 @@ async def serve(
                     continue
 
                 rel_path = os.path.relpath(full_path, root_path)
-                uri = f"file://{rel_path}"
+                uri = URL_ADAPTER.validate_python(f"file://{rel_path}")
 
                 resources.append(
                     types.Resource(
@@ -213,7 +214,7 @@ async def serve(
         return resources
 
     @server.read_resource()
-    async def handle_read_resource(uri: types.AnyUrl) -> str:
+    async def handle_read_resource(uri: AnyUrl) -> str:
         """Read contents of a specific file.
 
         Args:
@@ -553,7 +554,7 @@ async def serve(
         )
 
     # Run the server
-    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+    async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
             write_stream,
