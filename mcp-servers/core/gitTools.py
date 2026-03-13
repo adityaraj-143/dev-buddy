@@ -21,6 +21,8 @@ from pydantic import BaseModel, Field
 DEFAULT_CONTEXT_LINES = 3
 # Repository access policy
 ALLOW_LLM_REPO_PATH = False
+# Permanent scope root for all repository access
+WORKSPACE_SCOPE = (Path(__file__).resolve().parent / "../../workspace").resolve()
 
 class BranchType(str, Enum):
     LOCAL = "local"
@@ -28,7 +30,10 @@ class BranchType(str, Enum):
     ALL = "all"
 
 class GitBase(BaseModel):
-    repo_path: str = Field(..., description="Path to the Git repository")
+    repo_path: str = Field(
+        ...,
+        description="Repository path relative to the fixed workspace scope",
+    )
 
 
 class GitStatus(GitBase):
@@ -301,6 +306,17 @@ def validate_repo_path(repo_path: Path, allowed_repository: Path | None) -> None
         )
 
 
+def resolve_scoped_repo_path(repo_path: str, scope_root: Path) -> Path:
+    candidate = Path(repo_path)
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+    else:
+        resolved = (scope_root / candidate).resolve()
+
+    validate_repo_path(resolved, scope_root)
+    return resolved
+
+
 def git_branch(
     repo: git.Repo,
     branch_type: str,
@@ -333,14 +349,20 @@ def git_branch(
 
 async def serve(repository: Path | None) -> None:
     logger = logging.getLogger(__name__)
+    scope_root = WORKSPACE_SCOPE
 
-    if repository is not None:
-        try:
-            git.Repo(repository)
-            logger.info(f"Using repository at {repository}")
-        except git.InvalidGitRepositoryError:
-            logger.error(f"{repository} is not a valid Git repository")
-            return
+    if repository is not None and repository.resolve() != scope_root:
+        logger.warning(
+            "Ignoring provided repository '%s'; using fixed scope '%s'",
+            repository,
+            scope_root,
+        )
+
+    if not scope_root.exists() or not scope_root.is_dir():
+        logger.error(f"Fixed workspace scope does not exist or is not a directory: {scope_root}")
+        return
+
+    logger.info(f"Using fixed repository scope at {scope_root}")
 
     server = Server("mcp-git")
 
@@ -440,7 +462,7 @@ async def serve(repository: Path | None) -> None:
             return repo_paths
 
         def by_commandline() -> Sequence[str]:
-            return [str(repository)] if repository is not None else []
+            return [str(scope_root)]
 
         cmd_repos = by_commandline()
         root_repos = await by_roots()
@@ -448,10 +470,7 @@ async def serve(repository: Path | None) -> None:
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        repo_path = Path(arguments["repo_path"])
-
-        # Validate repo_path is within allowed repository
-        validate_repo_path(repo_path, repository)
+        repo_path = resolve_scoped_repo_path(arguments["repo_path"], scope_root)
 
         if name == GitTools.INIT:
             result = git_init(repo_path)
