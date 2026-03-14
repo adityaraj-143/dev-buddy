@@ -1,11 +1,12 @@
 #!/bin/bash
 
-cd "$(dirname "$0")"
+# move into core directory
+cd "$(dirname "$0")/../core"
 
 echo "Starting filesystem MCP..."
-uv run python ../core/filesystem.py . < /dev/stdin &
+uv run python filesystem.py . < /dev/stdin &
 
 echo "Starting git MCP..."
-uv run python ../core/gitTools.py < /dev/stdin &
+uv run python gitTools.py < /dev/stdin &
 
 wait
