@@ -24,10 +24,12 @@ ALLOW_LLM_REPO_PATH = False
 # Permanent scope root for all repository access
 WORKSPACE_SCOPE = (Path(__file__).resolve().parent / "../../workspace").resolve()
 
+
 class BranchType(str, Enum):
     LOCAL = "local"
     REMOTE = "remote"
     ALL = "all"
+
 
 class GitBase(BaseModel):
     repo_path: str = Field(
@@ -96,7 +98,7 @@ class GitShow(GitBase):
 
 class GitBranch(GitBase):
     branch_type: BranchType = Field(
-        default= BranchType.LOCAL,
+        default=BranchType.LOCAL,
         description="Whether to list local branches ('local'), remote branches ('remote') or all branches('all').",
     )
     contains: Optional[str] = Field(
@@ -359,7 +361,9 @@ async def serve(repository: Path | None) -> None:
         )
 
     if not scope_root.exists() or not scope_root.is_dir():
-        logger.error(f"Fixed workspace scope does not exist or is not a directory: {scope_root}")
+        logger.error(
+            f"Fixed workspace scope does not exist or is not a directory: {scope_root}"
+        )
         return
 
     logger.info(f"Using fixed repository scope at {scope_root}")
@@ -371,102 +375,189 @@ async def serve(repository: Path | None) -> None:
         return [
             Tool(
                 name=GitTools.INIT,
-                description="Initialize an empty Git repository",
+                description="""
+        Initialize a new empty Git repository in the current directory.
+
+        Use this when starting version control for a project.
+
+        Example:
+        - Initialize repository: {}
+        """,
                 inputSchema=GitInit.model_json_schema(),
             ),
             Tool(
                 name=GitTools.STATUS,
-                description="Shows the working tree status",
+                description="""
+        Show the current state of the working directory and staging area.
+
+        Displays:
+        - Modified files
+        - Staged files
+        - Untracked files
+        - Current branch
+
+        Example:
+        - Check repository status: {}
+        """,
                 inputSchema=GitStatus.model_json_schema(),
             ),
             Tool(
                 name=GitTools.DIFF_UNSTAGED,
-                description="Shows changes in the working directory that are not yet staged",
+                description="""
+        Show changes in the working directory that are NOT staged yet.
+
+        Useful for reviewing edits before staging them.
+
+        Example:
+        - Show unstaged changes: {}
+        """,
                 inputSchema=GitDiffUnstaged.model_json_schema(),
             ),
             Tool(
                 name=GitTools.DIFF_STAGED,
-                description="Shows changes that are staged for commit",
+                description="""
+        Show changes that are currently staged for the next commit.
+
+        Useful for verifying what will be included in the commit.
+
+        Example:
+        - Show staged changes: {}
+        """,
                 inputSchema=GitDiffStaged.model_json_schema(),
             ),
             Tool(
                 name=GitTools.DIFF,
-                description="Shows differences between branches or commits",
+                description="""
+        Show differences between commits, branches, or specific references.
+
+        Useful for reviewing code changes across branches or history.
+
+        Examples:
+        - Compare two branches
+        - Compare two commits
+        - Compare working tree with a commit
+        """,
                 inputSchema=GitDiff.model_json_schema(),
             ),
             Tool(
                 name=GitTools.COMMIT,
-                description="Records changes to the repository",
+                description="""
+        Record staged changes to the repository as a new commit.
+
+        A commit saves the current staged snapshot of the project.
+
+        Examples:
+        - Commit staged changes with message
+        - Create a checkpoint in project history
+
+        You must provide a commit message.
+        """,
                 inputSchema=GitCommit.model_json_schema(),
             ),
             Tool(
                 name=GitTools.ADD,
-                description="Adds file contents to the staging area",
+                description="""
+        Stage files for commit.
+
+        Moves file changes from the working directory to the staging area.
+
+        Examples:
+        - Stage all changes: files=["."]
+        - Stage specific files: files=["file1.py","file2.py"]
+
+        You must always provide 'files'.
+        """,
                 inputSchema=GitAdd.model_json_schema(),
             ),
             Tool(
                 name=GitTools.RESET,
-                description="Unstages all staged changes",
+                description="""
+        Unstage files that were previously added to the staging area.
+
+        This moves changes from the staging area back to the working directory
+        without modifying the actual file contents.
+
+        Example:
+        - Unstage all staged files
+        """,
                 inputSchema=GitReset.model_json_schema(),
             ),
             Tool(
                 name=GitTools.LOG,
-                description="Shows the commit logs",
+                description="""
+        Show the commit history of the repository.
+
+        Displays:
+        - Commit hashes
+        - Commit messages
+        - Authors
+        - Dates
+
+        Useful for exploring project history.
+
+        Example:
+        - View commit history
+        """,
                 inputSchema=GitLog.model_json_schema(),
             ),
             Tool(
                 name=GitTools.CREATE_BRANCH,
-                description="Creates a new branch from an optional base branch",
+                description="""
+        Create a new Git branch.
+
+        The new branch can optionally be created from a specified base branch.
+
+        Examples:
+        - Create branch from current branch
+        - Create branch from another branch
+
+        Useful for starting new features or experiments.
+        """,
                 inputSchema=GitCreateBranch.model_json_schema(),
             ),
             Tool(
                 name=GitTools.CHECKOUT,
-                description="Switches branches",
+                description="""
+        Switch to another branch in the repository.
+
+        This updates the working directory to match the selected branch.
+
+        Examples:
+        - Switch to an existing branch
+        - Move working directory to another branch's state
+        """,
                 inputSchema=GitCheckout.model_json_schema(),
             ),
             Tool(
                 name=GitTools.SHOW,
-                description="Shows the contents of a commit",
+                description="""
+        Show detailed information about a specific commit.
+
+        Displays:
+        - Commit metadata
+        - Commit message
+        - File changes introduced by the commit
+
+        Example:
+        - Inspect a commit using its hash
+        """,
                 inputSchema=GitShow.model_json_schema(),
             ),
             Tool(
                 name=GitTools.BRANCH,
-                description="List Git branches",
+                description="""
+        List all branches in the repository.
+
+        Shows:
+        - Local branches
+        - Current active branch
+
+        Example:
+        - View all available branches
+        """,
                 inputSchema=GitBranch.model_json_schema(),
             ),
         ]
-        
-        async def by_roots() -> Sequence[str]:
-            if not isinstance(server.request_context.session, ServerSession):
-                raise TypeError(
-                    "server.request_context.session must be a ServerSession"
-                )
-
-            if not server.request_context.session.check_client_capability(
-                ClientCapabilities(roots=RootsCapability())
-            ):
-                return []
-
-            roots_result: ListRootsResult = (
-                await server.request_context.session.list_roots()
-            )
-            logger.debug(f"Roots result: {roots_result}")
-            repo_paths = []
-            for root in roots_result.roots:
-                path = root.uri.path
-                try:
-                    git.Repo(path)
-                    repo_paths.append(str(path))
-                except git.InvalidGitRepositoryError:
-                    pass
-            return repo_paths
-
-        def by_commandline() -> Sequence[str]:
-            return [str(scope_root)]
-
-        cmd_repos = by_commandline()
-        root_repos = await by_roots()
-        return [*root_repos, *cmd_repos]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
@@ -572,9 +663,7 @@ async def serve(repository: Path | None) -> None:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Run MCP Git tools server over stdio"
-    )
+    parser = argparse.ArgumentParser(description="Run MCP Git tools server over stdio")
     parser.add_argument(
         "repository",
         nargs="?",
