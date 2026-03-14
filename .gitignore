@@ -37,7 +37,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 mcp-servers/core/.venv/
 mcp-servers/core/mcp_test.txt
-mcp-servers/core/filesystem_test.py
+mcp-servers/test/filesystem_test.py
 
 **/workspace/
 workspace/
