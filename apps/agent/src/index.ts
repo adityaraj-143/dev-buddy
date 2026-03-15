@@ -127,7 +127,7 @@ class MCPClient {
     ];
 
     const response = await this.openai.chat.completions.create({
-      model: 'qwen2.5', // ollama model
+      model: 'qwen2.5:1.5b', // ollama model
       messages,
       tools: this.tools,
     });
@@ -166,7 +166,7 @@ class MCPClient {
         });
 
         const secondResponse = await this.openai.chat.completions.create({
-          model: 'qwen2.5',
+          model: 'qwen2.5:1.5b',
           messages,
         });
 
