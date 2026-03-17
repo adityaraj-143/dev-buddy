@@ -11,6 +11,9 @@ from pydantic import AnyUrl, BaseModel, Field, TypeAdapter
 
 MAX_FILE_SIZE = 2 * 1024 * 1024  # 2MBs
 URL_ADAPTER = TypeAdapter(AnyUrl)
+DEFAULT_ROOT_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
 
 # Configuration constants
 DEFAULT_IGNORE_PATTERNS = [
@@ -572,8 +575,10 @@ async def serve(
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) != 2:
-        print("Usage: python server.py <root_directory>", file=sys.stderr)
+    if len(sys.argv) > 2:
+        print("Usage: python filesystem.py [root_directory]", file=sys.stderr)
         sys.exit(1)
 
-    asyncio.run(serve(sys.argv[1]))
+    root_directory = sys.argv[1] if len(sys.argv) == 2 else DEFAULT_ROOT_PATH
+
+    asyncio.run(serve(root_directory))

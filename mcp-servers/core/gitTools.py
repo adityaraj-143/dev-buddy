@@ -19,10 +19,30 @@ from pydantic import BaseModel, Field
 
 # Default number of context lines to show in diff output
 DEFAULT_CONTEXT_LINES = 3
-# Repository access policy
-ALLOW_LLM_REPO_PATH = False
-# Permanent scope root for all repository access
-WORKSPACE_SCOPE = (Path(__file__).resolve().parent / "../../workspace").resolve()
+DEFAULT_REPO_ROOT = (Path(__file__).resolve().parent / "../..").resolve()
+
+# Absolute paths that are never allowed to be accessed
+BLOCKED_PATHS: list[Path] = [
+    Path(p)
+    for p in [
+        "/etc",
+        "/sys",
+        "/proc",
+        "/dev",
+        "/boot",
+        "/root",
+        "/bin",
+        "/sbin",
+        "/usr/bin",
+        "/usr/sbin",
+        "/lib",
+        "/lib64",
+        "/lib32",
+        "/libx32",
+        "/run",
+        "/snap",
+    ]
+]
 
 
 class BranchType(str, Enum):
@@ -34,7 +54,7 @@ class BranchType(str, Enum):
 class GitBase(BaseModel):
     repo_path: str = Field(
         ...,
-        description="Repository path relative to the fixed workspace scope",
+        description="Repository path. Relative paths are resolved from the project root; absolute paths are also allowed if safe.",
     )
 
 
@@ -282,40 +302,33 @@ def git_show(repo: git.Repo, revision: str) -> str:
     return "".join(output)
 
 
-def validate_repo_path(repo_path: Path, allowed_repository: Path | None) -> None:
-    """Validate repository access policy."""
-
-    # If unrestricted mode enabled, skip validation
-    if ALLOW_LLM_REPO_PATH:
-        return
-
-    if allowed_repository is None:
-        raise ValueError(
-            "Repository access is restricted but no allowed repository configured"
-        )
-
-    try:
-        resolved_repo = repo_path.resolve()
-        resolved_allowed = allowed_repository.resolve()
-    except (OSError, RuntimeError):
-        raise ValueError(f"Invalid path: {repo_path}")
-
-    try:
-        resolved_repo.relative_to(resolved_allowed)
-    except ValueError:
-        raise ValueError(
-            f"Repository path '{repo_path}' is outside the allowed workspace '{allowed_repository}'"
-        )
+def is_blocked(path: Path) -> bool:
+    resolved = path.resolve()
+    for blocked in BLOCKED_PATHS:
+        try:
+            resolved.relative_to(blocked.resolve())
+            return True
+        except ValueError:
+            continue
+    return False
 
 
-def resolve_scoped_repo_path(repo_path: str, scope_root: Path) -> Path:
+def resolve_repo_path(repo_path: str, base_root: Path | None = None) -> Path:
     candidate = Path(repo_path)
+
     if candidate.is_absolute():
         resolved = candidate.resolve()
     else:
-        resolved = (scope_root / candidate).resolve()
+        resolved = ((base_root or DEFAULT_REPO_ROOT) / candidate).resolve()
 
-    validate_repo_path(resolved, scope_root)
+    if is_blocked(resolved):
+        raise ValueError(
+            f"Access denied: '{resolved}' is inside a protected system path."
+        )
+
+    if resolved.is_symlink():
+        raise ValueError(f"Access denied: '{resolved}' is a symbolic link.")
+
     return resolved
 
 
@@ -351,22 +364,27 @@ def git_branch(
 
 async def serve(repository: Path | None) -> None:
     logger = logging.getLogger(__name__)
-    scope_root = WORKSPACE_SCOPE
+    base_root = repository.resolve() if repository else DEFAULT_REPO_ROOT
 
-    if repository is not None and repository.resolve() != scope_root:
-        logger.warning(
-            "Ignoring provided repository '%s'; using fixed scope '%s'",
-            repository,
-            scope_root,
-        )
-
-    if not scope_root.exists() or not scope_root.is_dir():
+    if is_blocked(base_root):
         logger.error(
-            f"Fixed workspace scope does not exist or is not a directory: {scope_root}"
+            "Configured repository root is inside a protected path: %s", base_root
         )
         return
 
-    logger.info(f"Using fixed repository scope at {scope_root}")
+    if base_root.is_symlink():
+        logger.error(
+            "Configured repository root cannot be a symbolic link: %s", base_root
+        )
+        return
+
+    if not base_root.exists() or not base_root.is_dir():
+        logger.error(
+            f"Repository root does not exist or is not a directory: {base_root}"
+        )
+        return
+
+    logger.info(f"Using repository root at {base_root}")
 
     server = Server("mcp-git")
 
@@ -561,7 +579,7 @@ async def serve(repository: Path | None) -> None:
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        repo_path = resolve_scoped_repo_path(arguments["repo_path"], scope_root)
+        repo_path = resolve_repo_path(arguments["repo_path"], base_root)
 
         if name == GitTools.INIT:
             result = git_init(repo_path)
@@ -668,9 +686,9 @@ if __name__ == "__main__":
         "repository",
         nargs="?",
         default=None,
-        help="Optional repository path to allow access under",
+        help="Optional project root used to resolve relative repository paths",
     )
     parsed = parser.parse_args()
 
-    repo = Path(parsed.repository).resolve() if parsed.repository else None
+    repo = Path(parsed.repository).resolve() if parsed.repository else DEFAULT_REPO_ROOT
     asyncio.run(serve(repo))

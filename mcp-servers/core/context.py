@@ -10,17 +10,58 @@ from mcp.types import Tool, TextContent
 
 from pydantic import BaseModel, Field
 
-# Fixed workspace scope (same idea as git server)
-WORKSPACE_SCOPE = (Path(__file__).resolve().parent / "../../workspace").resolve()
-
 # Maximum file size to read for summaries (safety)
 MAX_FILE_SIZE = 100_000
+DEFAULT_REPO_ROOT = (Path(__file__).resolve().parent / "../..").resolve()
+
+# Absolute paths that are never allowed to be accessed
+BLOCKED_PATHS: list[Path] = [
+    Path(p)
+    for p in [
+        "/etc",
+        "/sys",
+        "/proc",
+        "/dev",
+        "/boot",
+        "/root",
+        "/bin",
+        "/sbin",
+        "/usr/bin",
+        "/usr/sbin",
+        "/lib",
+        "/lib64",
+        "/lib32",
+        "/libx32",
+        "/run",
+        "/snap",
+    ]
+]
+
+# Patterns to silently skip when walking directories
+IGNORED_NAMES = {
+    ".git",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".env",
+    ".idea",
+    ".vscode",
+    "dist",
+    "build",
+    ".pytest_cache",
+    ".coverage",
+    "htmlcov",
+    ".DS_Store",
+    "Thumbs.db",
+    "node_modules",
+    "*.egg-info",
+}
 
 
 class ContextBase(BaseModel):
     repo_path: str = Field(
         ...,
-        description="Repository path relative to the fixed workspace scope",
+        description="Repository path. Relative paths are resolved from the project root; absolute paths are also allowed if safe.",
     )
 
 
@@ -34,7 +75,7 @@ class RepoTree(ContextBase):
 class FileSummary(ContextBase):
     file_path: str = Field(
         ...,
-        description="File path relative to repository root",
+        description="File path relative to the repository root (must stay inside the repository)",
     )
 
 
@@ -48,30 +89,47 @@ class ContextTools(str, Enum):
     REPO_SUMMARY = "repo_summary"
 
 
-def validate_repo_path(repo_path: Path, allowed_repository: Path) -> None:
-    try:
-        resolved_repo = repo_path.resolve()
-        resolved_allowed = allowed_repository.resolve()
-    except (OSError, RuntimeError):
-        raise ValueError(f"Invalid path: {repo_path}")
-
-    try:
-        resolved_repo.relative_to(resolved_allowed)
-    except ValueError:
-        raise ValueError(
-            f"Repository path '{repo_path}' is outside allowed workspace '{allowed_repository}'"
-        )
+def is_blocked(path: Path) -> bool:
+    """Return True if *path* falls inside (or is equal to) any BLOCKED_PATHS entry."""
+    resolved = path.resolve()
+    for blocked in BLOCKED_PATHS:
+        try:
+            resolved.relative_to(blocked.resolve())
+            return True
+        except ValueError:
+            continue
+    return False
 
 
-def resolve_scoped_repo_path(repo_path: str, scope_root: Path) -> Path:
+def is_ignored_name(name: str) -> bool:
+    """Return True if the file/dir name matches a known noise pattern."""
+    import fnmatch
+
+    for pattern in IGNORED_NAMES:
+        if fnmatch.fnmatch(name, pattern):
+            return True
+    return False
+
+
+def resolve_repo_path(repo_path: str, base_root: Path | None = None) -> Path:
+    """
+    Resolve *repo_path* to an absolute Path, rejecting blocked / unsafe locations.
+    """
     candidate = Path(repo_path)
 
     if candidate.is_absolute():
         resolved = candidate.resolve()
     else:
-        resolved = (scope_root / candidate).resolve()
+        resolved = ((base_root or DEFAULT_REPO_ROOT) / candidate).resolve()
 
-    validate_repo_path(resolved, scope_root)
+    if is_blocked(resolved):
+        raise ValueError(
+            f"Access denied: '{resolved}' is inside a protected system path."
+        )
+
+    if resolved.is_symlink():
+        raise ValueError(f"Access denied: '{resolved}' is a symbolic link.")
+
     return resolved
 
 
@@ -82,8 +140,15 @@ def generate_repo_tree(repo: Path, max_depth: int) -> str:
         if depth > max_depth:
             return
 
-        for item in sorted(directory.iterdir()):
-            if item.name.startswith(".git"):
+        try:
+            entries = sorted(directory.iterdir())
+        except PermissionError:
+            return
+
+        for item in entries:
+            if item.is_symlink():
+                continue  # never follow symlinks
+            if is_ignored_name(item.name):
                 continue
 
             indent = "  " * depth
@@ -99,6 +164,9 @@ def generate_repo_tree(repo: Path, max_depth: int) -> str:
 def summarize_file(file_path: Path) -> str:
     if not file_path.exists():
         raise ValueError(f"File does not exist: {file_path}")
+
+    if file_path.is_symlink():
+        raise ValueError(f"Refusing to read symlink: {file_path}")
 
     if file_path.stat().st_size > MAX_FILE_SIZE:
         return f"File too large to summarize safely: {file_path.name}"
@@ -147,9 +215,14 @@ def summarize_file(file_path: Path) -> str:
 
 
 def generate_repo_summary(repo: Path) -> str:
-    files = list(repo.rglob("*"))
-
-    source_files = [f for f in files if f.is_file() and not ".git" in str(f)]
+    source_files = []
+    for f in repo.rglob("*"):
+        if f.is_symlink():
+            continue
+        if any(is_ignored_name(part) for part in f.parts):
+            continue
+        if f.is_file():
+            source_files.append(f)
 
     extensions = {}
 
@@ -179,15 +252,21 @@ def generate_repo_summary(repo: Path) -> str:
 
 async def serve(repository: Path | None) -> None:
     logger = logging.getLogger(__name__)
-    scope_root = WORKSPACE_SCOPE
+    base_root = repository.resolve() if repository else DEFAULT_REPO_ROOT
 
-    if not scope_root.exists() or not scope_root.is_dir():
-        logger.error(
-            f"Workspace scope does not exist or is not a directory: {scope_root}"
-        )
+    if is_blocked(base_root):
+        logger.error("Configured repository root is inside a protected path: %s", base_root)
         return
 
-    logger.info(f"Using workspace scope at {scope_root}")
+    if base_root.is_symlink():
+        logger.error("Configured repository root cannot be a symbolic link: %s", base_root)
+        return
+
+    if not base_root.exists() or not base_root.is_dir():
+        logger.error(f"Repository root does not exist or is not a directory: {base_root}")
+        return
+
+    logger.info(f"Using repository root at {base_root}")
 
     server = Server("mcp-context")
 
@@ -237,10 +316,16 @@ Shows:
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
-        repo_path = resolve_scoped_repo_path(arguments["repo_path"], scope_root)
+        try:
+            repo_path = resolve_repo_path(arguments["repo_path"], base_root)
+        except ValueError as exc:
+            raise ValueError(str(exc))
 
         if not repo_path.exists():
             raise ValueError(f"Repository path does not exist: {repo_path}")
+
+        if not repo_path.is_dir():
+            raise ValueError(f"Repository path is not a directory: {repo_path}")
 
         match name:
 
@@ -253,7 +338,12 @@ Shows:
                 return [TextContent(type="text", text=tree)]
 
             case ContextTools.FILE_SUMMARY:
-                file_path = repo_path / arguments["file_path"]
+                file_path = (repo_path / arguments["file_path"]).resolve()
+
+                try:
+                    file_path.relative_to(repo_path)
+                except ValueError:
+                    raise ValueError("File path escapes repository scope")
 
                 summary = summarize_file(file_path)
 
@@ -284,11 +374,11 @@ if __name__ == "__main__":
         "repository",
         nargs="?",
         default=None,
-        help="Optional repository path under workspace",
+        help="Optional project root used to resolve relative repository paths",
     )
 
     parsed = parser.parse_args()
 
-    repo = Path(parsed.repository).resolve() if parsed.repository else None
+    repo = Path(parsed.repository).resolve() if parsed.repository else DEFAULT_REPO_ROOT
 
     asyncio.run(serve(repo))

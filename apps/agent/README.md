@@ -18,7 +18,7 @@ Optional environment variables:
 
 - `OLLAMA_BASE_URL` (default: `http://localhost:11434/v1`)
 - `MCP_CORE_CWD` (default: `../../mcp-servers/core` from `apps/agent`)
-- `MCP_FILESYSTEM_ROOT` (default: `<repo-root>/workspace`)
+- `MCP_FILESYSTEM_ROOT` (default: `<repo-root>`)
 - `MCP_GIT_REPO` (default: `<repo-root>`)
 
 Example:
