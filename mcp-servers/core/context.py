@@ -26,8 +26,7 @@ BLOCKED_PATHS: list[Path] = [
         "/root",
         "/bin",
         "/sbin",
-        "/usr/bin",
-        "/usr/sbin",
+        "/usr",
         "/lib",
         "/lib64",
         "/lib32",
@@ -36,6 +35,9 @@ BLOCKED_PATHS: list[Path] = [
         "/snap",
     ]
 ]
+
+# Refuse to summarise folders with more files than this (avoids hanging on huge trees)
+MAX_SUMMARY_FILES = 5_000
 
 # Patterns to silently skip when walking directories
 IGNORED_NAMES = {
@@ -223,6 +225,8 @@ def generate_repo_summary(repo: Path) -> str:
             continue
         if f.is_file():
             source_files.append(f)
+        if len(source_files) > MAX_SUMMARY_FILES:
+            return f"Directory '{repo}' is too large to summarise (>{MAX_SUMMARY_FILES} files). Please specify a subdirectory."
 
     extensions = {}
 
@@ -255,15 +259,21 @@ async def serve(repository: Path | None) -> None:
     base_root = repository.resolve() if repository else DEFAULT_REPO_ROOT
 
     if is_blocked(base_root):
-        logger.error("Configured repository root is inside a protected path: %s", base_root)
+        logger.error(
+            "Configured repository root is inside a protected path: %s", base_root
+        )
         return
 
     if base_root.is_symlink():
-        logger.error("Configured repository root cannot be a symbolic link: %s", base_root)
+        logger.error(
+            "Configured repository root cannot be a symbolic link: %s", base_root
+        )
         return
 
     if not base_root.exists() or not base_root.is_dir():
-        logger.error(f"Repository root does not exist or is not a directory: {base_root}")
+        logger.error(
+            f"Repository root does not exist or is not a directory: {base_root}"
+        )
         return
 
     logger.info(f"Using repository root at {base_root}")
