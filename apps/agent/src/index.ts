@@ -7,6 +7,22 @@ import path from 'path';
 
 dotenv.config();
 
+const SYSTEM_PROMPT = `You are an MCP-powered coding assistant.
+
+Tool selection rules:
+- Use context tools for directory trees, repository summaries, file summaries, and understanding folder contents.
+- Use filesystem tools for raw text search, file writes, and deletes.
+- Use git tools only for git repository operations.
+- If the user asks to list a folder, inspect a folder, summarize a folder, or summarize files in a folder, prefer context tools first.
+- Relative paths are resolved from the dev-buddy project root.
+- If the user mentions a folder like "workspace", treat it as the folder relative to the project root unless they provide an absolute path.
+- When the user asks to "use all the tools" from a server, call each relevant tool from that server and combine the results.
+- Do not use search-files when the user is asking for directory structure or summaries unless they explicitly ask for text search.
+`;
+
+const MODEL_NAME = 'qwen2.5:1.5b';
+const MAX_TOOL_ROUNDS = 6;
+
 type ServerConfig = {
   id: string;
   command: string;
@@ -121,26 +137,40 @@ class MCPClient {
   async processQuery(query: string) {
     const messages: any[] = [
       {
+        role: 'system',
+        content: SYSTEM_PROMPT,
+      },
+      {
         role: 'user',
         content: query,
       },
     ];
 
-    const response = await this.openai.chat.completions.create({
-      model: 'qwen2.5:1.5b', // ollama model
-      messages,
-      tools: this.tools,
-    });
+    let finalText = '';
 
-    const message = response?.choices[0]?.message;
-    if (!message) {
-      throw new Error('No response from model');
-    }
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+      const response = await this.openai.chat.completions.create({
+        model: MODEL_NAME,
+        messages,
+        tools: this.tools,
+      });
 
-    let finalText = message.content ?? '';
+      const message = response?.choices[0]?.message;
+      if (!message) {
+        throw new Error('No response from model');
+      }
 
-    if (message.tool_calls) {
-      for (const toolCall of message.tool_calls ?? []) {
+      messages.push(message);
+
+      if (message.content) {
+        finalText += (finalText ? '\n' : '') + message.content;
+      }
+
+      if (!message.tool_calls?.length) {
+        break;
+      }
+
+      for (const toolCall of message.tool_calls) {
         if (toolCall.type !== 'function') continue;
 
         const toolName = toolCall.function.name;
@@ -157,28 +187,15 @@ class MCPClient {
 
         finalText += `\n[Calling ${targetTool.serverId}.${toolName} with args ${JSON.stringify(toolArgs)}]`;
 
-        messages.push(message);
-
         messages.push({
           role: 'tool',
           tool_call_id: toolCall.id,
           content: this.toolResultToString(result.content),
         });
-
-        const secondResponse = await this.openai.chat.completions.create({
-          model: 'qwen2.5:1.5b',
-          messages,
-        });
-
-        const secondMessage = secondResponse.choices?.[0]?.message;
-
-        if (secondMessage?.content) {
-          finalText += '\n' + secondMessage.content;
-        }
       }
     }
 
-    return finalText;
+    return finalText || 'No response generated.';
   }
 
   async chatLoop() {
@@ -211,10 +228,8 @@ class MCPClient {
 
 async function main() {
   const repoRoot = path.resolve(process.cwd(), '../..');
-  const defaultWorkspaceRoot = path.join(repoRoot, 'workspace');
   const coreCwd = process.env.MCP_CORE_CWD ?? '../../mcp-servers/core';
-  const filesystemRoot =
-    process.env.MCP_FILESYSTEM_ROOT ?? defaultWorkspaceRoot;
+  const filesystemRoot = process.env.MCP_FILESYSTEM_ROOT ?? repoRoot;
   const gitRepo = process.env.MCP_GIT_REPO ?? repoRoot;
 
   const serverConfigs: ServerConfig[] = [
@@ -230,7 +245,7 @@ async function main() {
       args: ['run', 'python', 'gitTools.py', gitRepo],
       cwd: coreCwd,
     },
-     {
+    {
       id: 'context',
       command: 'uv',
       args: ['run', 'python', 'context.py', gitRepo],
