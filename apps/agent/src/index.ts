@@ -230,6 +230,12 @@ async function main() {
       args: ['run', 'python', 'gitTools.py', gitRepo],
       cwd: coreCwd,
     },
+     {
+      id: 'context',
+      command: 'uv',
+      args: ['run', 'python', 'context.py', gitRepo],
+      cwd: coreCwd,
+    },
   ];
 
   const mcpClient = new MCPClient();
