@@ -41,3 +41,6 @@ mcp-servers/test/filesystem_test.py
 
 **/workspace/
 workspace/
+
+# OpenCode planning documents (local only)
+.opencode/
