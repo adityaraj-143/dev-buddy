@@ -118,8 +118,8 @@ function calculateConfidence(
  * Validate Phase 1 completion
  * 
  * Phase 1 is considered complete if:
- * 1. At least 2 different tools called, OR confidence >= 0.6
- * 2. At least 1 non-empty result received
+ * - At least minTools different tools called (STRICT requirement)
+ * - High confidence is NOT enough on its own
  */
 export function validatePhase1Completion(
   messages: Message[],
@@ -134,10 +134,10 @@ export function validatePhase1Completion(
   const uniqueTools = new Set(toolCalls).size;
   const confidence = calculateConfidence(toolCalls, results);
 
-  // Completion logic: (2+ tools) OR (confident result)
+  // Completion logic: MUST have minTools, confidence alone is not enough
+  // This prevents hallucinating one wrong tool and getting high confidence
   const hasEnoughTools = uniqueTools >= minTools;
-  const hasHighConfidence = confidence >= confidenceThreshold;
-  const isComplete = hasEnoughTools || (hasHighConfidence && results.length > 0);
+  const isComplete = hasEnoughTools && results.length > 0;
 
   // Build information map
   const foundInformation: Record<string, unknown> = {
@@ -156,13 +156,9 @@ export function validatePhase1Completion(
   // Determine reason
   let reason = '';
   if (isComplete) {
-    if (hasEnoughTools) {
-      reason = `Sufficient tools executed (${uniqueTools} >= ${minTools})`;
-    } else {
-      reason = `High confidence result (${confidence.toFixed(2)} >= ${confidenceThreshold})`;
-    }
+    reason = `Research complete: ${uniqueTools} tools used (${minTools} required)`;
   } else {
-    reason = `Need more research: ${uniqueTools}/${minTools} tools, confidence ${confidence.toFixed(2)} < ${confidenceThreshold}`;
+    reason = `Need more research: ${uniqueTools}/${minTools} tools used, confidence ${confidence.toFixed(2)}`;
   }
 
   return {
