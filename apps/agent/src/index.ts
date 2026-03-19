@@ -245,6 +245,7 @@ class MCPClient {
 
       // STEP 2: Main reasoning loop
       let lastRound = 0;
+      let phase1ForcedContinues = 0;
       for (let round = 0; round < this.config.maxTotalRounds; round++) {
         lastRound = round;
         // Call LLM
@@ -269,20 +270,32 @@ class MCPClient {
             });
 
             if (earlyExit) {
-              logPhaseForcedContinue('Agent attempted early exit from Phase 1', round);
+              phase1ForcedContinues++;
+              logPhaseForcedContinue(
+                `Agent attempted early exit from Phase 1 (attempt ${phase1ForcedContinues})`,
+                round
+              );
 
-              messages.push({
-                role: 'system',
-                content: `You must continue researching. You haven't yet gathered enough information about the codebase.
+              // After 3 forced continues, let agent answer anyway (fallback)
+              if (phase1ForcedContinues >= 3) {
+                logInfo(
+                  `Phase 1 forced continues exceeded threshold. Allowing answer with current research.`
+                );
+                phase1Complete = true;
+              } else {
+                messages.push({
+                  role: 'system',
+                  content: `You must continue researching. You haven't yet gathered enough information about the codebase.
 
-Current status: ${toolsCalled.length}/${this.config.phase1MinTools} tools used.
+Current status: ${toolsCalled.length}/${this.config.phase1MinTools} tools used, ${phase1ForcedContinues}/3 continue warnings.
 
-Continue by calling one of these tools:
+Use these research tools:
 ${classification.toolChain.slice(0, 3).join(', ')}
 
 Do NOT provide a final answer until you've thoroughly investigated the codebase.`,
-              });
-              continue;
+                });
+                continue;
+              }
             }
           }
 
