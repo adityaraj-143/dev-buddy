@@ -5,6 +5,28 @@ import readline from 'readline/promises';
 import dotenv from 'dotenv';
 import path from 'path';
 
+import { loadConfig, validateConfig } from './agentConfig';
+import {
+  logQueryClassification,
+  logPhaseProgress,
+  logToolCall,
+  logToolResult,
+  logAgentDecision,
+  logPhaseForcedContinue,
+  logPhaseTransition,
+  logExecutionSummary,
+  logError,
+  logInfo,
+} from './agentLogger';
+import { classifyQuery } from './queryClassifier';
+import { validatePhase1Completion, suggestNextTool, isEarlyExit } from './phaseValidator';
+import type {
+  AgentConfig,
+  Message,
+  OpenAIToolCall,
+  ToolResult,
+} from './types';
+
 dotenv.config();
 
 const SYSTEM_PROMPT = `You are an MCP-powered coding assistant with access to tools for interacting with a local codebase.
@@ -113,10 +135,12 @@ class MCPClient {
     { client: Client; toolName: string; serverId: string }
   >();
   private tools: any[] = [];
+  private config: AgentConfig;
 
-  constructor() {
+  constructor(config: AgentConfig) {
+    this.config = config;
     this.openai = new OpenAI({
-      baseURL: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1/',
+      baseURL: config.ollamaBaseUrl,
       apiKey: 'ollama', // required but unused
     });
   }
@@ -204,62 +228,216 @@ class MCPClient {
   }
 
   async processQuery(query: string) {
-    const messages: any[] = [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: query },
-    ];
+    const startTime = Date.now();
 
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const response = await this.openai.chat.completions.create({
-        model: MODEL_NAME,
-        messages,
-        tools: this.tools,
+    try {
+      // STEP 0: Classify query
+      const classification = classifyQuery(query);
+      logQueryClassification(query, classification);
+
+      const messages: Message[] = [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: query },
+      ];
+
+      // STEP 1: Determine if this is a codebase query requiring Phase 1
+      const isCodebaseQuery = classification.type === 'codebase';
+      let phase1Complete = false;
+      const toolsCalled: string[] = [];
+
+      logPhaseProgress({
+        phase: 'research',
+        status: 'started',
+        details: {
+          isCodebaseQuery,
+          requiredTools: classification.toolChain,
+        },
       });
 
-      const message = response?.choices[0]?.message;
-      if (!message) throw new Error('No response from model');
+      // STEP 2: Main reasoning loop
+      for (let round = 0; round < this.config.maxTotalRounds; round++) {
+        // Call LLM
+        const response = await this.openai.chat.completions.create({
+          model: this.config.modelName,
+          messages: messages as any,
+          tools: this.tools,
+        });
 
-      messages.push(message);
+        const message = (response?.choices[0]?.message) as any;
+        if (!message) throw new Error('No response from model');
 
-      // CASE 1: Final answer
-      if (!message.tool_calls || message.tool_calls.length === 0) {
-        return message.content ?? 'No response generated.';
-      }
+        messages.push(message as Message);
 
-      // CASE 2: Tool usage
-      for (const toolCall of message.tool_calls) {
-        if (toolCall.type !== 'function') continue;
+        // STEP 3: Check if agent wants to stop
+        if (!message.tool_calls || message.tool_calls.length === 0) {
+          // Codebase query: check if Phase 1 is complete
+          if (isCodebaseQuery && !phase1Complete) {
+            const earlyExit = isEarlyExit(messages, {
+              minTools: this.config.phase1MinTools,
+              confidenceThreshold: this.config.phase1ConfidenceThreshold,
+            });
 
-        const toolName = toolCall.function.name;
-        const toolArgs = JSON.parse(toolCall.function.arguments);
+            if (earlyExit) {
+              logPhaseForcedContinue('Agent attempted early exit from Phase 1', round);
 
-        const targetTool = this.toolToServer.get(toolName);
-        if (!targetTool) {
-          throw new Error(`No MCP server registered for tool '${toolName}'`);
+              messages.push({
+                role: 'system',
+                content: `You must continue researching. You haven't yet gathered enough information about the codebase.
+
+Current status: ${toolsCalled.length}/${this.config.phase1MinTools} tools used.
+
+Continue by calling one of these tools:
+${classification.toolChain.slice(0, 3).join(', ')}
+
+Do NOT provide a final answer until you've thoroughly investigated the codebase.`,
+              });
+              continue;
+            }
+          }
+
+          // Exit is allowed
+          const durationMs = Date.now() - startTime;
+          logExecutionSummary(query, isCodebaseQuery, toolsCalled, round + 1, durationMs);
+          return message.content ?? 'No response generated.';
         }
 
-        const result = await targetTool.client.callTool({
-          name: targetTool.toolName,
-          arguments: toolArgs,
-        });
+        // STEP 4: Execute tools
+        for (const toolCall of message.tool_calls) {
+          if (toolCall.type !== 'function') continue;
 
-        const toolResult = this.toolResultToString(result.content);
+          // Cast to our custom interface which matches the OpenAI SDK structure
+          const call = toolCall as unknown as OpenAIToolCall;
+          const toolName = call.function.name;
+          const toolArgs = JSON.parse(call.function.arguments);
+          const callStartTime = Date.now();
 
-        messages.push({
-          role: 'tool',
-          tool_call_id: toolCall.id,
-          content: `Tool: ${toolName}\nResult:\n${toolResult}`,
+          logToolCall(toolName, toolArgs, '?');
+
+          const targetTool = this.toolToServer.get(toolName);
+          if (!targetTool) {
+            throw new Error(`No MCP server registered for tool '${toolName}'`);
+          }
+
+          try {
+            const result = await targetTool.client.callTool({
+              name: targetTool.toolName,
+              arguments: toolArgs,
+            });
+
+            const toolResult = this.toolResultToString(result.content);
+            const duration = Date.now() - callStartTime;
+
+            logToolResult({
+              toolCall: {
+                id: toolCall.id,
+                name: toolName,
+                arguments: toolArgs,
+                serverId: targetTool.serverId,
+                timestamp: callStartTime,
+              },
+              content: toolResult,
+              success: true,
+              duration,
+              resultSize: toolResult.length,
+            });
+
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: `Tool: ${toolName}\nResult:\n${toolResult}`,
+            });
+
+            toolsCalled.push(toolName);
+          } catch (error) {
+            logError(`Tool ${toolName} failed`, error);
+
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: `Tool: ${toolName}\nResult:\nError: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            });
+          }
+        }
+
+        // STEP 5: Validate Phase 1 completion if codebase query
+        if (isCodebaseQuery && !phase1Complete) {
+          const phase1Result = validatePhase1Completion(messages, {
+            minTools: this.config.phase1MinTools,
+            confidenceThreshold: this.config.phase1ConfidenceThreshold,
+          });
+
+          logPhaseProgress({
+            phase: 'research',
+            status: 'in_progress',
+            round,
+            toolsCalled: Array.from(new Set(toolsCalled)),
+            confidence: phase1Result.confidence,
+          });
+
+          if (phase1Result.isComplete) {
+            phase1Complete = true;
+
+            logPhaseTransition('research', 'analysis', {
+              toolsUsed: Array.from(new Set(toolsCalled)),
+              confidence: phase1Result.confidence,
+            });
+
+            messages.push({
+              role: 'system',
+              content: `PHASE_1_RESEARCH_COMPLETE.
+
+You have gathered sufficient information about the codebase. Now move to PHASE 2:
+- Analyze your findings
+- Provide a comprehensive answer grounded in the actual code
+- Reference specific files and line numbers from what you discovered
+- Base your answer entirely on what you found with the tools, not general knowledge
+
+Provide the final answer now.`,
+            });
+          } else {
+            // Still need more research
+            const nextTool = suggestNextTool(messages, this.tools.map((t) => t.function.name));
+
+            messages.push({
+              role: 'system',
+              content: `Continue Phase 1 research. You have gathered some information but need more.
+
+Current progress: ${phase1Result.confidence.toFixed(2)} confidence
+Tools used: ${Array.from(new Set(toolsCalled)).join(', ')}
+
+Next step: Use ${nextTool.suggestion} to gather more details.
+Reasoning: ${nextTool.reasoning}
+
+Continue investigating.`,
+            });
+          }
+        } else {
+          // Non-codebase query or Phase 2 - normal continuation
+          messages.push({
+            role: 'system',
+            content:
+              'Continue reasoning. Use more tools if needed. If you have enough information, provide the final answer.',
+          });
+        }
+
+        logAgentDecision({
+          round,
+          decided: phase1Complete ? 'provide_answer' : 'use_tools',
+          toolsToCall: message.tool_calls ? message.tool_calls.map((t: any) => t.function.name) : [],
+          reasoning: isCodebaseQuery
+            ? `Phase 1: ${phase1Complete ? 'complete' : 'in progress'}`
+            : 'General query',
+          timestamp: Date.now(),
         });
       }
 
-      messages.push({
-        role: 'system',
-        content:
-          'Continue reasoning. Use more tools if needed. If the task is complete, provide the final answer.',
-      });
+      const durationMs = Date.now() - startTime;
+      logExecutionSummary(query, isCodebaseQuery, toolsCalled, this.config.maxTotalRounds, durationMs);
+      return 'Max tool rounds reached without final answer.';
+    } catch (error) {
+      logError('Error processing query', error);
+      throw error;
     }
-
-    return 'Max tool rounds reached without final answer.';
   }
 
   async chatLoop() {
@@ -315,9 +493,19 @@ async function main() {
       args: ['run', 'python', 'context.py', gitRepo],
       cwd: coreCwd,
     },
+    {
+      id: 'search',
+      command: 'uv',
+      args: ['run', 'python', 'search.py', repoRoot],
+      cwd: coreCwd,
+    },
   ];
 
-  const mcpClient = new MCPClient();
+  // Load and validate configuration
+  const config = loadConfig();
+  validateConfig(config);
+
+  const mcpClient = new MCPClient(config);
 
   try {
     await mcpClient.connectToServers(serverConfigs);
