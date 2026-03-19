@@ -15,6 +15,7 @@ import {
   logPhaseForcedContinue,
   logPhaseTransition,
   logExecutionSummary,
+  logPhase1ValidationDetails,
   logError,
   logInfo,
 } from './agentLogger';
@@ -255,7 +256,9 @@ class MCPClient {
       });
 
       // STEP 2: Main reasoning loop
+      let lastRound = 0;
       for (let round = 0; round < this.config.maxTotalRounds; round++) {
+        lastRound = round;
         // Call LLM
         const response = await this.openai.chat.completions.create({
           model: this.config.modelName,
@@ -366,6 +369,17 @@ Do NOT provide a final answer until you've thoroughly investigated the codebase.
             confidenceThreshold: this.config.phase1ConfidenceThreshold,
           });
 
+          // Log detailed validation info
+          logPhase1ValidationDetails({
+            uniqueTools: new Set(toolsCalled).size,
+            minToolsRequired: this.config.phase1MinTools,
+            confidence: phase1Result.confidence,
+            confidenceThreshold: this.config.phase1ConfidenceThreshold,
+            resultCount: (phase1Result.foundInformation as any)?.resultCount || 0,
+            reason: phase1Result.reason || '',
+            isComplete: phase1Result.isComplete,
+          });
+
           logPhaseProgress({
             phase: 'research',
             status: 'in_progress',
@@ -432,7 +446,36 @@ Continue investigating.`,
       }
 
       const durationMs = Date.now() - startTime;
-      logExecutionSummary(query, isCodebaseQuery, toolsCalled, this.config.maxTotalRounds, durationMs);
+      logExecutionSummary(query, isCodebaseQuery, toolsCalled, lastRound + 1, durationMs);
+      
+      // Force answer after max rounds instead of giving up
+      logInfo(`Max rounds reached (${lastRound + 1}/${this.config.maxTotalRounds}). Forcing final answer from agent.`);
+      
+      messages.push({
+        role: 'system',
+        content: `RESEARCH TIME LIMIT REACHED.
+
+You have used ${toolsCalled.length} different tools and gathered information from ${lastRound + 1} rounds.
+
+Based on your research so far, provide your best answer now. Even if you feel it's incomplete, 
+give your analysis based on what you've gathered. Do not perform more tool calls.
+
+Provide the final answer immediately.`,
+      });
+      
+      // One more LLM call to force the answer
+      const finalResponse = await this.openai.chat.completions.create({
+        model: this.config.modelName,
+        messages: messages as any,
+        tools: this.tools,
+      });
+      
+      const finalMessage = finalResponse?.choices[0]?.message;
+      if (finalMessage) {
+        logInfo(`Forced answer generated after ${lastRound + 1} rounds`);
+        return finalMessage.content ?? 'Unable to generate final answer.';
+      }
+      
       return 'Max tool rounds reached without final answer.';
     } catch (error) {
       logError('Error processing query', error);

@@ -196,3 +196,27 @@ export function logExecutionSummary(
     timestamp: new Date().toISOString(),
   });
 }
+
+/**
+ * Log Phase 1 validation details
+ */
+export function logPhase1ValidationDetails(details: {
+  uniqueTools: number;
+  minToolsRequired: number;
+  confidence: number;
+  confidenceThreshold: number;
+  resultCount: number;
+  reason: string;
+  isComplete: boolean;
+}): void {
+  if (!isDebugEnabled()) return;
+
+  console.log('[PHASE1_VALIDATION]', {
+    tools: `${details.uniqueTools}/${details.minToolsRequired}`,
+    confidence: `${details.confidence.toFixed(2)}/${details.confidenceThreshold}`,
+    results: details.resultCount,
+    complete: details.isComplete,
+    reason: details.reason,
+    timestamp: new Date().toISOString(),
+  });
+}

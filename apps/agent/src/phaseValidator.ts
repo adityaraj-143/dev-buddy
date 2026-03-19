@@ -15,7 +15,7 @@ function extractToolCalls(messages: Message[]): string[] {
 
   for (const msg of messages) {
     if (msg.role === 'assistant' && msg.tool_calls) {
-      for (const call of msg.tool_calls) {
+      for (const call of msg.tool_calls as any) {
         toolCalls.push(call.function.name);
       }
     }
@@ -49,28 +49,32 @@ function extractToolResults(messages: Message[]): Array<{ name: string; content:
 
 /**
  * Calculate information quality score based on results
+ * 
+ * More generous scoring to avoid getting stuck in Phase 1
  */
 function calculateInformationQuality(results: Array<{ name: string; content: string }>): number {
   if (results.length === 0) return 0;
 
   let qualityScore = 0;
-  let totalContent = 0;
 
   for (const result of results) {
     const contentLength = result.content.length;
-    totalContent += contentLength;
 
-    // Longer results = more information
-    if (contentLength > 100) qualityScore += 0.3;
-    else if (contentLength > 50) qualityScore += 0.15;
-    else if (contentLength > 0) qualityScore += 0.05;
+    // More generous scoring per result
+    if (contentLength > 500) qualityScore += 0.5;    // Very detailed result
+    else if (contentLength > 200) qualityScore += 0.4; // Good result
+    else if (contentLength > 100) qualityScore += 0.3; // Decent result
+    else if (contentLength > 50) qualityScore += 0.2;  // Minimal result
+    else if (contentLength > 0) qualityScore += 0.1;   // Very minimal
   }
 
-  // Average quality per result
-  const avgQuality = qualityScore / results.length;
-
-  // Normalize to 0-1
-  return Math.min(avgQuality, 1);
+  // Base score on number of results + individual quality
+  // Multiple results with even modest info = good progress
+  const baseScore = Math.min(results.length * 0.2, 0.4); // Up to 0.4 from quantity
+  const qualityPerResult = qualityScore / results.length;
+  
+  // Combined: benefits from both quantity and quality
+  return Math.min(baseScore + qualityPerResult, 1);
 }
 
 /**
