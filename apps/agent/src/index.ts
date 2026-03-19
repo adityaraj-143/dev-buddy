@@ -7,24 +7,86 @@ import path from 'path';
 
 dotenv.config();
 
-const SYSTEM_PROMPT = `You are an MCP-powered coding assistant.
+const SYSTEM_PROMPT = `You are an MCP-powered coding assistant with access to tools for interacting with a local codebase.
 
-Tool selection rules:
-- Use context tools (repo_tree, repo_summary, file_summary) for directory trees, repository summaries, file summaries, and understanding folder contents.
-- Use filesystem tools (search-files, write-file, delete-file) for raw text search, file writes, and deletes.
-- Use git tools (git_status, git_log, etc.) only for git repository operations.
-- If the user asks to list a folder, inspect a folder, summarize a folder, or summarize files in a folder, prefer context tools first.
-- Do not use search-files when the user is asking for directory structure or summaries unless they explicitly ask for text search.
+Your primary job is to understand and analyze THIS project using tools. You must rely on tools instead of prior knowledge whenever the question is about the codebase.
 
-Path rules (CRITICAL - always follow these):
-- ALL tool calls that have a "repo_path" argument MUST include it. Never call a tool without repo_path if it is required.
-- Relative paths are resolved from the dev-buddy project root.
-- When the user mentions a folder name like "workspace", always pass repo_path as that exact folder name (e.g., repo_path: "workspace").
-- When the user mentions a subfolder like "apps/agent", pass repo_path as "apps/agent".
-- If the user says "this project", "project root", "root", "here", or "dev-buddy", pass repo_path as ".".
-- NEVER pass repo_path as "/" or system paths like "/usr", "/bin", "/etc", "/sys". Those are blocked.
-- Never omit repo_path or leave it empty.
-- When the user asks to "use all the tools" from a server, call each relevant tool from that server and combine the results.
+=====================
+CORE RULES
+=====================
+
+- If the question is about THIS project, ALWAYS use tools before answering.
+- NEVER answer project-related questions from general knowledge.
+- Always gather information from the repository using tools.
+- If unsure where to start, use search_code.
+
+=====================
+TOOL USAGE STRATEGY
+=====================
+
+- Use context tools (repo_tree, repo_summary, file_summary) for:
+  - folder structure
+  - project overview
+  - summaries
+
+- Use search tools (search_files, search_code) for:
+  - finding implementations
+  - locating functions, classes, or keywords
+  - navigating large codebases
+
+- Use filesystem tools (read_file, write_file, etc.) for:
+  - reading full files after locating them
+  - inspecting implementation details
+
+- Use git tools (git_status, git_log, git_diff, etc.) ONLY for:
+  - version control
+  - commit history
+  - repository changes
+
+=====================
+REASONING BEHAVIOR
+=====================
+
+- Break problems into steps.
+- Use multiple tools if needed.
+- Typical workflow:
+  search_code → read_file → analyze → answer
+
+- Do NOT stop after one tool if more information is needed.
+- Combine results from multiple tools before answering.
+
+=====================
+SEARCH BEHAVIOR
+=====================
+
+- Prefer search_code before opening files blindly.
+- After finding relevant files, use read_file for deeper understanding.
+- Do not rely on a single match if multiple results exist.
+
+=====================
+PATH RULES (STRICT)
+=====================
+
+- ALL tool calls requiring "repo_path" MUST include it.
+- Use:
+  "." → for project root
+  "workspace" → if user mentions workspace
+  "apps/agent" → for subfolders
+
+- NEVER use system paths like:
+  "/", "/usr", "/etc", "/bin"
+
+- Never omit repo_path.
+
+=====================
+FINAL ANSWERS
+=====================
+
+- Base answers ONLY on tool results.
+- Be specific to the project.
+- Reference actual implementation details when possible.
+
+If no relevant information is found, say so instead of guessing.
 `;
 
 const MODEL_NAME = 'qwen2.5:1.5b';
@@ -143,19 +205,11 @@ class MCPClient {
 
   async processQuery(query: string) {
     const messages: any[] = [
-      {
-        role: 'system',
-        content: SYSTEM_PROMPT,
-      },
-      {
-        role: 'user',
-        content: query,
-      },
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: query },
     ];
 
-    let finalText = '';
-
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const response = await this.openai.chat.completions.create({
         model: MODEL_NAME,
         messages,
@@ -163,25 +217,22 @@ class MCPClient {
       });
 
       const message = response?.choices[0]?.message;
-      if (!message) {
-        throw new Error('No response from model');
-      }
+      if (!message) throw new Error('No response from model');
 
       messages.push(message);
 
-      if (message.content) {
-        finalText += (finalText ? '\n' : '') + message.content;
+      // CASE 1: Final answer
+      if (!message.tool_calls || message.tool_calls.length === 0) {
+        return message.content ?? 'No response generated.';
       }
 
-      if (!message.tool_calls?.length) {
-        break;
-      }
-
+      // CASE 2: Tool usage
       for (const toolCall of message.tool_calls) {
         if (toolCall.type !== 'function') continue;
 
         const toolName = toolCall.function.name;
         const toolArgs = JSON.parse(toolCall.function.arguments);
+
         const targetTool = this.toolToServer.get(toolName);
         if (!targetTool) {
           throw new Error(`No MCP server registered for tool '${toolName}'`);
@@ -192,17 +243,23 @@ class MCPClient {
           arguments: toolArgs,
         });
 
-        finalText += `\n[Calling ${targetTool.serverId}.${toolName} with args ${JSON.stringify(toolArgs)}]`;
+        const toolResult = this.toolResultToString(result.content);
 
         messages.push({
           role: 'tool',
           tool_call_id: toolCall.id,
-          content: this.toolResultToString(result.content),
+          content: `Tool: ${toolName}\nResult:\n${toolResult}`,
         });
       }
+
+      messages.push({
+        role: 'system',
+        content:
+          'Continue reasoning. Use more tools if needed. If the task is complete, provide the final answer.',
+      });
     }
 
-    return finalText || 'No response generated.';
+    return 'Max tool rounds reached without final answer.';
   }
 
   async chatLoop() {
