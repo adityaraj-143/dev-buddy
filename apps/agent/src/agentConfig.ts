@@ -27,9 +27,9 @@ export const DEFAULT_CONFIG: AgentConfig = {
 
   // Model behavior
   maxTotalRounds: 10,
-  modelName: 'claude-sonnet-4-20250514',
-  ollamaBaseUrl: 'https://api.anthropic.com/v1',
-  apiKey: process.env.ANTHROPIC_API_KEY || '',
+  modelName: 'mixtral-8x7b-32768',
+  ollamaBaseUrl: 'https://api.groq.com/openai/v1',
+  apiKey: process.env.GROQ_API_KEY || '',
 
   // Server configuration
   searchServerEnabled: true,
@@ -114,7 +114,7 @@ export function validateConfig(config: AgentConfig): string[] {
   }
 
   if (!config.apiKey || config.apiKey.trim() === '') {
-    errors.push('apiKey must be specified (set ANTHROPIC_API_KEY env var)');
+    errors.push('apiKey must be specified (set GROQ_API_KEY env var)');
   }
 
   return errors;
