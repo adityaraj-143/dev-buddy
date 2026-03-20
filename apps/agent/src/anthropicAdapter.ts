@@ -39,7 +39,7 @@ export class AnthropicAdapter {
       if (msg.role === 'user') {
         anthropicMessages.push({
           role: 'user',
-          content: msg.content || '',
+          content: (msg.content || '').trim(),
         });
         i++;
       } else if (msg.role === 'assistant') {
