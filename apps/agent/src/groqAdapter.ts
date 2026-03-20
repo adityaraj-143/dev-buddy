@@ -66,12 +66,6 @@ export class GroqAdapter {
     }
 
     // Call Groq API
-    const apiMessages = JSON.parse(JSON.stringify(openaiMessages));
-    if (process.env.DEBUG === '1' || process.env.DEBUG === 'true') {
-      console.error('[GROQ_DEBUG] Messages being sent:', JSON.stringify(apiMessages, null, 2));
-      console.error('[GROQ_DEBUG] Tools:', JSON.stringify(tools, null, 2));
-    }
-    
     const response = await this.client.chat.completions.create({
       model: modelName,
       max_tokens: 4096,
