@@ -27,7 +27,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
 
   // Model behavior
   maxTotalRounds: 10,
-  modelName: 'llama-3.1-70b-versatile',
+  modelName: 'llama-3.3-70b-versatile',
   ollamaBaseUrl: 'https://api.groq.com/openai/v1',
   apiKey: process.env.GROQ_API_KEY || '',
 
