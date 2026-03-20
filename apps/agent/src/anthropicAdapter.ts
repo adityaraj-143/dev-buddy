@@ -46,7 +46,7 @@ export class AnthropicAdapter {
         const blocks: (Anthropic.Messages.TextBlockParam | Anthropic.Messages.ToolUseBlockParam)[] = [];
 
         if (msg.content) {
-          blocks.push({ type: 'text', text: msg.content });
+          blocks.push({ type: 'text', text: msg.content.trim() });
         }
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
