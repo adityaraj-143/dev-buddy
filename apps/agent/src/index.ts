@@ -1,4 +1,3 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import readline from 'readline/promises';
@@ -6,7 +5,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 
 import { loadConfig, validateConfig } from './agentConfig';
-import { AnthropicAdapter } from './anthropicAdapter';
+import { GroqAdapter } from './groqAdapter';
 import {
   logQueryClassification,
   logPhaseProgress,
@@ -118,7 +117,7 @@ type ConnectedServer = {
 };
 
 class MCPClient {
-  private anthropicAdapter: AnthropicAdapter;
+  private groqAdapter: GroqAdapter;
   private servers: ConnectedServer[] = [];
   private toolToServer = new Map<
     string,
@@ -129,7 +128,7 @@ class MCPClient {
 
   constructor(config: AgentConfig) {
     this.config = config;
-    this.anthropicAdapter = new AnthropicAdapter(config.apiKey || '', SYSTEM_PROMPT);
+    this.groqAdapter = new GroqAdapter(config.apiKey || '', SYSTEM_PROMPT);
   }
 
   private registerServerTools(serverId: string, client: Client, tools: any[]) {
@@ -246,8 +245,8 @@ class MCPClient {
       let phase1ForcedContinues = 0;
       for (let round = 0; round < this.config.maxTotalRounds; round++) {
         lastRound = round;
-        // Call LLM via Anthropic adapter
-        const message = await this.anthropicAdapter.createMessage(
+        // Call LLM via Groq adapter
+        const message = await this.groqAdapter.createMessage(
           messages,
           this.tools,
           this.config.modelName
@@ -462,7 +461,7 @@ Provide the final answer immediately.`,
       });
       
       // One more LLM call to force the answer
-      const finalMessage = await this.anthropicAdapter.createMessage(
+      const finalMessage = await this.groqAdapter.createMessage(
         messages,
         this.tools,
         this.config.modelName
