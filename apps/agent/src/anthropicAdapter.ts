@@ -32,6 +32,14 @@ export class AnthropicAdapter {
       if (!msg) { i++; continue; }
 
       if (msg.role === 'system') {
+        // After first system message, treat subsequent system messages as user messages
+        // since Anthropic API doesn't support multiple system messages
+        if (anthropicMessages.length > 0) {
+          anthropicMessages.push({
+            role: 'user',
+            content: msg.content || '',
+          });
+        }
         i++;
         continue;
       }
@@ -143,6 +151,14 @@ export class AnthropicAdapter {
 
     // Convert messages to Anthropic format
     const anthropicMessages = this.convertMessagesToAnthropicFormat(messages);
+
+    // Anthropic requires at least one non-system message
+    if (anthropicMessages.length === 0) {
+      anthropicMessages.push({
+        role: 'user',
+        content: 'Continue',
+      });
+    }
 
     // Call Anthropic API
     const response = await this.client.messages.create({
