@@ -19,37 +19,40 @@ export class AnthropicAdapter {
 
   /**
    * Convert OpenAI-style messages to Anthropic format
-   * - Remove system messages (handled separately)
-   * - Convert tool messages to user messages with tool result content
+   * Handles: system (via param), user, assistant with tool_use, tool results in user message
    */
   private convertMessagesToAnthropicFormat(
     messages: Message[]
   ): Anthropic.Messages.MessageParam[] {
     const anthropicMessages: Anthropic.Messages.MessageParam[] = [];
+    let i = 0;
 
-    for (const msg of messages) {
+    while (i < messages.length) {
+      const msg = messages[i];
+      if (!msg) { i++; continue; }
+
       if (msg.role === 'system') {
-        // System messages are handled via the system parameter
+        i++;
         continue;
       }
 
-      if (msg.role === 'tool') {
-        // Convert tool messages to user messages
-        // Anthropic doesn't have a "tool" role - tool results go in user messages
+      if (msg.role === 'user') {
         anthropicMessages.push({
           role: 'user',
-          content: msg.content || 'Tool result received',
+          content: msg.content || '',
         });
+        i++;
       } else if (msg.role === 'assistant') {
-        // Assistant messages may contain tool calls
-        const toolUseBlocks: Anthropic.Messages.ToolUseBlockParam[] = [];
-        const textContent = msg.content || '';
+        const blocks: (Anthropic.Messages.TextBlockParam | Anthropic.Messages.ToolUseBlockParam)[] = [];
 
-        // If there are tool calls, add them as tool_use blocks
+        if (msg.content) {
+          blocks.push({ type: 'text', text: msg.content });
+        }
+
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           for (const toolCall of msg.tool_calls) {
             const args = JSON.parse(toolCall.function.arguments);
-            toolUseBlocks.push({
+            blocks.push({
               type: 'tool_use',
               id: toolCall.id,
               name: toolCall.function.name,
@@ -58,25 +61,35 @@ export class AnthropicAdapter {
           }
         }
 
-        // Build the content array
-        const content: (Anthropic.Messages.TextBlockParam | Anthropic.Messages.ToolUseBlockParam)[] = [];
-        if (textContent) {
-          content.push({
-            type: 'text',
-            text: textContent,
-          });
-        }
-        content.push(...toolUseBlocks);
-
         anthropicMessages.push({
           role: 'assistant',
-          content: content.length > 0 ? content : [{ type: 'text', text: '' }],
+          content: blocks.length > 0 ? blocks : [{ type: 'text', text: '' }],
         });
-      } else if (msg.role === 'user') {
-        anthropicMessages.push({
-          role: 'user',
-          content: msg.content || '',
-        });
+
+        // Collect tool results
+        i++;
+        const toolResultBlocks: Anthropic.Messages.ToolResultBlockParam[] = [];
+
+        while (i < messages.length && messages[i]?.role === 'tool') {
+          const toolMsg = messages[i];
+          if (toolMsg) {
+            toolResultBlocks.push({
+              type: 'tool_result',
+              tool_use_id: toolMsg.tool_call_id || '',
+              content: toolMsg.content || '',
+            });
+          }
+          i++;
+        }
+
+        if (toolResultBlocks.length > 0) {
+          anthropicMessages.push({
+            role: 'user',
+            content: toolResultBlocks,
+          });
+        }
+      } else {
+        i++;
       }
     }
 
