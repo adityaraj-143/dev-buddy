@@ -29,12 +29,7 @@ export class GroqAdapter {
     modelName: string
   ): Promise<Message> {
     // Convert messages to OpenAI format, preserving tool_call_id
-    const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [
-      {
-        role: 'system',
-        content: this.systemPrompt,
-      },
-    ];
+    const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [];
 
     for (const msg of messages) {
       if (msg.role === 'tool') {
@@ -54,6 +49,14 @@ export class GroqAdapter {
           assistantMsg.tool_calls = msg.tool_calls;
         }
         openaiMessages.push(assistantMsg);
+      } else if (msg.role === 'system') {
+        // Only add system message if this is the first one
+        if (openaiMessages.length === 0) {
+          openaiMessages.push({
+            role: 'system',
+            content: msg.content || '',
+          });
+        }
       } else {
         openaiMessages.push({
           role: msg.role as 'user' | 'assistant' | 'system',
@@ -63,11 +66,17 @@ export class GroqAdapter {
     }
 
     // Call Groq API
+    const apiMessages = JSON.parse(JSON.stringify(openaiMessages));
+    if (process.env.DEBUG === '1' || process.env.DEBUG === 'true') {
+      console.error('[GROQ_DEBUG] Messages being sent:', JSON.stringify(apiMessages, null, 2));
+      console.error('[GROQ_DEBUG] Tools:', JSON.stringify(tools, null, 2));
+    }
+    
     const response = await this.client.chat.completions.create({
       model: modelName,
       max_tokens: 4096,
       messages: openaiMessages,
-      tools: tools.length > 0 ? tools : undefined,
+      tools: tools && tools.length > 0 ? tools : undefined,
     });
 
     // Convert response back to Message format
