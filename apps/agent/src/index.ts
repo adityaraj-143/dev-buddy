@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import readline from 'readline/promises';
@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 
 import { loadConfig, validateConfig } from './agentConfig';
+import { AnthropicAdapter } from './anthropicAdapter';
 import {
   logQueryClassification,
   logPhaseProgress,
@@ -117,7 +118,7 @@ type ConnectedServer = {
 };
 
 class MCPClient {
-  private openai: OpenAI;
+  private anthropicAdapter: AnthropicAdapter;
   private servers: ConnectedServer[] = [];
   private toolToServer = new Map<
     string,
@@ -128,10 +129,7 @@ class MCPClient {
 
   constructor(config: AgentConfig) {
     this.config = config;
-    this.openai = new OpenAI({
-      baseURL: config.ollamaBaseUrl,
-      apiKey: 'ollama', // required but unused
-    });
+    this.anthropicAdapter = new AnthropicAdapter(config.apiKey || '', SYSTEM_PROMPT);
   }
 
   private registerServerTools(serverId: string, client: Client, tools: any[]) {
@@ -248,14 +246,13 @@ class MCPClient {
       let phase1ForcedContinues = 0;
       for (let round = 0; round < this.config.maxTotalRounds; round++) {
         lastRound = round;
-        // Call LLM
-        const response = await this.openai.chat.completions.create({
-          model: this.config.modelName,
-          messages: messages as any,
-          tools: this.tools,
-        });
+        // Call LLM via Anthropic adapter
+        const message = await this.anthropicAdapter.createMessage(
+          messages,
+          this.tools,
+          this.config.modelName
+        );
 
-        const message = (response?.choices[0]?.message) as any;
         if (!message) throw new Error('No response from model');
 
         messages.push(message as Message);
@@ -465,13 +462,12 @@ Provide the final answer immediately.`,
       });
       
       // One more LLM call to force the answer
-      const finalResponse = await this.openai.chat.completions.create({
-        model: this.config.modelName,
-        messages: messages as any,
-        tools: this.tools,
-      });
+      const finalMessage = await this.anthropicAdapter.createMessage(
+        messages,
+        this.tools,
+        this.config.modelName
+      );
       
-      const finalMessage = finalResponse?.choices[0]?.message;
       if (finalMessage) {
         logInfo(`Forced answer generated after ${lastRound + 1} rounds`);
         return finalMessage.content ?? 'Unable to generate final answer.';
