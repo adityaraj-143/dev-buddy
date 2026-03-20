@@ -28,17 +28,39 @@ export class GroqAdapter {
     tools: any[],
     modelName: string
   ): Promise<Message> {
-    // Convert messages to OpenAI format
+    // Convert messages to OpenAI format, preserving tool_call_id
     const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [
       {
         role: 'system',
         content: this.systemPrompt,
       },
-      ...messages.map((msg) => ({
-        role: msg.role as 'user' | 'assistant' | 'system',
-        content: msg.content || '',
-      })),
     ];
+
+    for (const msg of messages) {
+      if (msg.role === 'tool') {
+        // Tool messages must include tool_call_id
+        openaiMessages.push({
+          role: 'tool',
+          tool_call_id: msg.tool_call_id || '',
+          content: msg.content || '',
+        });
+      } else if (msg.role === 'assistant') {
+        // Include tool_calls if present
+        const assistantMsg: any = {
+          role: 'assistant',
+          content: msg.content || '',
+        };
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          assistantMsg.tool_calls = msg.tool_calls;
+        }
+        openaiMessages.push(assistantMsg);
+      } else {
+        openaiMessages.push({
+          role: msg.role as 'user' | 'assistant' | 'system',
+          content: msg.content || '',
+        });
+      }
+    }
 
     // Call Groq API
     const response = await this.client.chat.completions.create({
