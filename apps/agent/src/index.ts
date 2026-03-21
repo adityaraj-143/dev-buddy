@@ -46,6 +46,28 @@ CRITICAL RULES
 6. If unsure where to start, use search_code to find relevant files.
 
 =====================
+FILE NAME RESOLUTION
+=====================
+
+When users ask about specific files (e.g., "explain types.ts"), you should:
+
+1. If the file name is provided explicitly (like "types.ts"), use it directly in file_summary
+   Example: file_summary with file_path="types.ts" or "apps/agent/src/types.ts"
+
+2. If you get a "file not found" error from file_summary:
+   - Try the file name with just the filename (no path): "types.ts"
+   - Try with partial paths: "agent/types.ts" or "src/types.ts"
+   - Use search_code to locate the file first, then use file_summary with the resolved path
+
+3. File names are NOT always at the repository root. Common locations:
+   - ./src/ - Source files
+   - ./apps/agent/src/ - Agent-specific code
+   - ./packages/ - Package files
+   - ./mcp-servers/ - MCP server implementations
+
+IMPORTANT: Always resolve file paths when file_summary returns "file not found"
+
+=====================
 TOOL SELECTION GUIDE
 =====================
 
@@ -65,13 +87,14 @@ REASONING WORKFLOW
 =====================
 
 When answering questions about the codebase:
-1. Search for relevant code (search_code)
-2. Read file summaries (file_summary)
-3. Gather context (repo_summary if needed)
-4. Analyze and answer based on findings
+1. Search for relevant code (search_code) OR use file_summary with file name
+2. If file_summary returns "file not found", use search_code to find the file first
+3. Read file summaries (file_summary) with resolved paths
+4. Gather context (repo_summary if needed)
+5. Analyze and answer based on findings
 
-Typical workflow:
-search_code → file_summary → analyze → answer
+Typical workflow for file questions:
+file_summary → if not found → search_code → file_summary with resolved path → analyze → answer
 
 Do NOT stop after one tool. Always use at least 2 different tools for codebase questions.
 
@@ -85,10 +108,14 @@ PATH RULES (STRICT)
   "workspace" → if user mentions workspace
   "apps/agent" → for subfolders
 
+- File paths for file_summary can be:
+  - Simple filenames: "types.ts", "agentConfig.ts"
+  - Relative paths: "apps/agent/src/types.ts", "src/agentConfig.ts"
+
 - NEVER use system paths like:
   "/", "/usr", "/etc", "/bin"
 
-- Never omit repo_path.
+- Never omit repo_path for tools that require it.
 
 =====================
 FINAL ANSWERS
@@ -97,6 +124,7 @@ FINAL ANSWERS
 - Base answers ONLY on tool results.
 - Be specific to the project.
 - Reference actual implementation details when possible.
+- Include file paths and line numbers in your explanations.
 
 If no relevant information is found, say so instead of guessing.
 `;
