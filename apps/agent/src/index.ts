@@ -6,6 +6,7 @@ import path from 'path';
 
 import { loadConfig, validateConfig } from './agentConfig';
 import { GroqAdapter } from './groqAdapter';
+import { getFileResolutionContext, findRepoRoot } from './filePathResolver';
 import {
   logQueryClassification,
   logPhaseProgress,
@@ -30,103 +31,18 @@ import type {
 
 dotenv.config();
 
-const SYSTEM_PROMPT = `You are an MCP-powered coding assistant with access to tools for interacting with a local codebase.
+const SYSTEM_PROMPT = `You are a helpful assistant with access to tools for analyzing code in a local repository.
 
-Your primary job is to understand and analyze THIS project using tools. You must rely on tools instead of prior knowledge whenever the question is about the codebase.
+When users ask about files or code, use the available tools to find and analyze them.
 
-=====================
-CRITICAL RULES
-=====================
+IMPORTANT: When asked about specific files (like "context.py"):
+1. Use search-files to find the file
+2. Use file_summary to read the file
+3. Provide analysis based on what you find
 
-1. If the question is about THIS project, ALWAYS use tools before answering.
-2. NEVER answer project-related questions from general knowledge.
-3. Always gather information from the repository using tools.
-4. ONLY use git tools (git_init, git_status, git_commit, etc.) for actual version control operations.
-5. DO NOT use git tools to explore or explain code - use search_code and file_summary instead.
-6. If unsure where to start, use search_code to find relevant files.
+Available tools: search-files, file_summary, search_code, repo_tree, repo_summary, git_log, git_status, git_diff
 
-=====================
-FILE NAME RESOLUTION
-=====================
-
-When users ask about specific files (e.g., "explain types.ts"), you should:
-
-1. If the file name is provided explicitly (like "types.ts"), use it directly in file_summary
-   Example: file_summary with file_path="types.ts" or "apps/agent/src/types.ts"
-
-2. If you get a "file not found" error from file_summary:
-   - Try the file name with just the filename (no path): "types.ts"
-   - Try with partial paths: "agent/types.ts" or "src/types.ts"
-   - Use search_code to locate the file first, then use file_summary with the resolved path
-
-3. File names are NOT always at the repository root. Common locations:
-   - ./src/ - Source files
-   - ./apps/agent/src/ - Agent-specific code
-   - ./packages/ - Package files
-   - ./mcp-servers/ - MCP server implementations
-
-IMPORTANT: Always resolve file paths when file_summary returns "file not found"
-
-=====================
-TOOL SELECTION GUIDE
-=====================
-
-For explaining code or understanding implementations:
-→ Use search_code to FIND relevant files/functions
-→ Use file_summary to UNDERSTAND file structure
-→ Use repo_summary to UNDERSTAND project overview
-
-For code changes/version control:
-→ Use git_add, git_commit, git_log for version control only
-
-WRONG: Using git_init or git_status to understand code
-RIGHT: Using search_code and file_summary to understand code
-
-=====================
-REASONING WORKFLOW
-=====================
-
-When answering questions about the codebase:
-1. Search for relevant code (search_code) OR use file_summary with file name
-2. If file_summary returns "file not found", use search_code to find the file first
-3. Read file summaries (file_summary) with resolved paths
-4. Gather context (repo_summary if needed)
-5. Analyze and answer based on findings
-
-Typical workflow for file questions:
-file_summary → if not found → search_code → file_summary with resolved path → analyze → answer
-
-Do NOT stop after one tool. Always use at least 2 different tools for codebase questions.
-
-=====================
-PATH RULES (STRICT)
-=====================
-
-- ALL tool calls requiring "repo_path" MUST include it.
-- Use:
-  "." → for project root
-  "workspace" → if user mentions workspace
-  "apps/agent" → for subfolders
-
-- File paths for file_summary can be:
-  - Simple filenames: "types.ts", "agentConfig.ts"
-  - Relative paths: "apps/agent/src/types.ts", "src/agentConfig.ts"
-
-- NEVER use system paths like:
-  "/", "/usr", "/etc", "/bin"
-
-- Never omit repo_path for tools that require it.
-
-=====================
-FINAL ANSWERS
-=====================
-
-- Base answers ONLY on tool results.
-- Be specific to the project.
-- Reference actual implementation details when possible.
-- Include file paths and line numbers in your explanations.
-
-If no relevant information is found, say so instead of guessing.
+Always base your answers on actual information from the tools, not assumptions.
 `;
 
 const MODEL_NAME = 'qwen2.5:1.5b';
@@ -241,6 +157,37 @@ class MCPClient {
     return JSON.stringify(content);
   }
 
+  /**
+   * Resolve file paths in tool arguments using the filePathResolver
+   * This ensures that relative file paths like "context.py" get resolved to absolute paths
+   */
+  private resolveFilePathsInArgs(toolName: string, args: Record<string, any>): Record<string, any> {
+    // Only process file_summary and search_files tools
+    if (!['file_summary', 'search_files'].includes(toolName)) {
+      return args;
+    }
+
+    const repoRoot = findRepoRoot();
+    const resolvedArgs = { ...args };
+
+    // Try to resolve file_path argument
+    if ('file_path' in resolvedArgs && typeof resolvedArgs.file_path === 'string') {
+      const filePath = resolvedArgs.file_path;
+      
+      // Only resolve if it looks like a relative path without full context
+      if (!filePath.startsWith('/') && !filePath.startsWith('.') && 
+          (filePath.includes('.') || filePath.length < 30)) {
+        const resolution = getFileResolutionContext(filePath, repoRoot);
+        if (resolution) {
+          resolvedArgs.file_path = resolution.filePath;
+          logInfo(`Resolved file path: "${filePath}" → "${resolution.filePath}"`);
+        }
+      }
+    }
+
+    return resolvedArgs;
+  }
+
   async processQuery(query: string) {
     const startTime = Date.now();
 
@@ -346,10 +293,13 @@ Do NOT provide a final answer until you've thoroughly investigated the codebase.
             throw new Error(`No MCP server registered for tool '${toolName}'`);
           }
 
+          // Resolve file paths in tool arguments before execution
+          const resolvedArgs = this.resolveFilePathsInArgs(toolName, toolArgs);
+
           try {
             const result = await targetTool.client.callTool({
               name: targetTool.toolName,
-              arguments: toolArgs,
+              arguments: resolvedArgs,
             });
 
             const toolResult = this.toolResultToString(result.content);
