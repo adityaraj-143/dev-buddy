@@ -36,11 +36,11 @@ const SYSTEM_PROMPT = `You are a helpful assistant with access to tools for anal
 When users ask about files or code, use the available tools to find and analyze them.
 
 IMPORTANT: When asked about specific files (like "context.py"):
-1. Use search-files to find the file
+1. Use search_files to find the file
 2. Use file_summary to read the file
 3. Provide analysis based on what you find
 
-Available tools: search-files, file_summary, search_code, repo_tree, repo_summary, git_log, git_status, git_diff
+Available tools: search_files, search_code, file_summary, repo_tree, repo_summary, git_log, git_status, git_diff
 
 Always base your answers on actual information from the tools, not assumptions.
 `;
@@ -163,7 +163,7 @@ class MCPClient {
    */
   private resolveFilePathsInArgs(toolName: string, args: Record<string, any>): Record<string, any> {
     // Only process file_summary and search_files tools
-    if (!['file_summary', 'search_files'].includes(toolName)) {
+    if (!['file_summary', 'search_files', 'search-files'].includes(toolName)) {
       return args;
     }
 
@@ -492,12 +492,13 @@ async function main() {
   const gitRepo = process.env.MCP_GIT_REPO ?? repoRoot;
 
   const serverConfigs: ServerConfig[] = [
-    {
-      id: 'filesystem',
-      command: 'uv',
-      args: ['run', 'python', 'filesystem.py', filesystemRoot],
-      cwd: coreCwd,
-    },
+    // Disabled: Use search.py instead for better search_files tool
+    // {
+    //   id: 'filesystem',
+    //   command: 'uv',
+    //   args: ['run', 'python', 'filesystem.py', filesystemRoot],
+    //   cwd: coreCwd,
+    // },
     {
       id: 'git',
       command: 'uv',
