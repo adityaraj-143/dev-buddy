@@ -27,8 +27,9 @@ export const DEFAULT_CONFIG: AgentConfig = {
 
   // Model behavior
   maxTotalRounds: 10,
-  modelName: 'qwen2.5:1.5b',
-  ollamaBaseUrl: 'http://localhost:11434/v1/',
+  modelName: 'llama-3.3-70b-versatile',
+  ollamaBaseUrl: 'https://api.groq.com/openai/v1',
+  apiKey: process.env.GROQ_API_KEY || '',
 
   // Server configuration
   searchServerEnabled: true,
@@ -112,8 +113,8 @@ export function validateConfig(config: AgentConfig): string[] {
     errors.push('modelName must be specified');
   }
 
-  if (!config.ollamaBaseUrl || config.ollamaBaseUrl.trim() === '') {
-    errors.push('ollamaBaseUrl must be specified');
+  if (!config.apiKey || config.apiKey.trim() === '') {
+    errors.push('apiKey must be specified (set GROQ_API_KEY env var)');
   }
 
   return errors;

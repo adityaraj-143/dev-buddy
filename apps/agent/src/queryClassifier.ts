@@ -5,6 +5,7 @@
  */
 
 import type { QueryClassification, ClassificationMarkers } from './types';
+import { extractFileNamesFromQuery, resolveFilePath } from './filePathResolver';
 
 /**
  * Keywords that indicate a codebase/project-specific query
@@ -181,9 +182,26 @@ function hasGeneralKnowledgePattern(query: string): boolean {
  */
 function suggestToolChain(
   markers: ClassificationMarkers,
-  queryLower: string
+  queryLower: string,
+  query: string
 ): string[] {
   const tools: string[] = [];
+
+  // Check if query mentions specific files
+  const mentionedFiles = extractFileNamesFromQuery(query);
+  
+  // If specific files are mentioned, add file_summary to tools
+  if (mentionedFiles.length > 0) {
+    // Try to resolve the files - if found, they can be passed directly to file_summary
+    const resolvedFiles = mentionedFiles
+      .map(f => resolveFilePath(f, '.'))
+      .filter(r => r.found);
+    
+    if (resolvedFiles.length > 0) {
+      tools.push('file_summary', 'search_code');
+      return tools;
+    }
+  }
 
   // If asking about structure/files
   if (
@@ -255,7 +273,7 @@ export function classifyQuery(query: string): QueryClassification {
     reason = 'Ambiguous query - classified based on confidence score';
   }
 
-  const toolChain = isCodebaseQuery ? suggestToolChain(markers, query.toLowerCase()) : [];
+  const toolChain = isCodebaseQuery ? suggestToolChain(markers, query.toLowerCase(), query) : [];
 
   return {
     type: isCodebaseQuery ? 'codebase' : 'general',

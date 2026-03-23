@@ -26,6 +26,7 @@ export interface AgentConfig {
   maxTotalRounds: number;
   modelName: string;
   ollamaBaseUrl: string;
+  apiKey?: string;
 
   // Server configuration
   searchServerEnabled: boolean;

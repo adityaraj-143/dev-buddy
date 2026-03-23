@@ -1,4 +1,3 @@
-import OpenAI from 'openai';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import readline from 'readline/promises';
@@ -6,6 +5,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 
 import { loadConfig, validateConfig } from './agentConfig';
+import { GroqAdapter } from './groqAdapter';
 import {
   logQueryClassification,
   logPhaseProgress,
@@ -15,6 +15,7 @@ import {
   logPhaseForcedContinue,
   logPhaseTransition,
   logExecutionSummary,
+  logPhase1ValidationDetails,
   logError,
   logInfo,
 } from './agentLogger';
@@ -34,56 +35,68 @@ const SYSTEM_PROMPT = `You are an MCP-powered coding assistant with access to to
 Your primary job is to understand and analyze THIS project using tools. You must rely on tools instead of prior knowledge whenever the question is about the codebase.
 
 =====================
-CORE RULES
+CRITICAL RULES
 =====================
 
-- If the question is about THIS project, ALWAYS use tools before answering.
-- NEVER answer project-related questions from general knowledge.
-- Always gather information from the repository using tools.
-- If unsure where to start, use search_code.
+1. If the question is about THIS project, ALWAYS use tools before answering.
+2. NEVER answer project-related questions from general knowledge.
+3. Always gather information from the repository using tools.
+4. ONLY use git tools (git_init, git_status, git_commit, etc.) for actual version control operations.
+5. DO NOT use git tools to explore or explain code - use search_code and file_summary instead.
+6. If unsure where to start, use search_code to find relevant files.
 
 =====================
-TOOL USAGE STRATEGY
+FILE NAME RESOLUTION
 =====================
 
-- Use context tools (repo_tree, repo_summary, file_summary) for:
-  - folder structure
-  - project overview
-  - summaries
+When users ask about specific files (e.g., "explain types.ts"), you should:
 
-- Use search tools (search_files, search_code) for:
-  - finding implementations
-  - locating functions, classes, or keywords
-  - navigating large codebases
+1. If the file name is provided explicitly (like "types.ts"), use it directly in file_summary
+   Example: file_summary with file_path="types.ts" or "apps/agent/src/types.ts"
 
-- Use filesystem tools (read_file, write_file, etc.) for:
-  - reading full files after locating them
-  - inspecting implementation details
+2. If you get a "file not found" error from file_summary:
+   - Try the file name with just the filename (no path): "types.ts"
+   - Try with partial paths: "agent/types.ts" or "src/types.ts"
+   - Use search_code to locate the file first, then use file_summary with the resolved path
 
-- Use git tools (git_status, git_log, git_diff, etc.) ONLY for:
-  - version control
-  - commit history
-  - repository changes
+3. File names are NOT always at the repository root. Common locations:
+   - ./src/ - Source files
+   - ./apps/agent/src/ - Agent-specific code
+   - ./packages/ - Package files
+   - ./mcp-servers/ - MCP server implementations
 
-=====================
-REASONING BEHAVIOR
-=====================
-
-- Break problems into steps.
-- Use multiple tools if needed.
-- Typical workflow:
-  search_code → read_file → analyze → answer
-
-- Do NOT stop after one tool if more information is needed.
-- Combine results from multiple tools before answering.
+IMPORTANT: Always resolve file paths when file_summary returns "file not found"
 
 =====================
-SEARCH BEHAVIOR
+TOOL SELECTION GUIDE
 =====================
 
-- Prefer search_code before opening files blindly.
-- After finding relevant files, use read_file for deeper understanding.
-- Do not rely on a single match if multiple results exist.
+For explaining code or understanding implementations:
+→ Use search_code to FIND relevant files/functions
+→ Use file_summary to UNDERSTAND file structure
+→ Use repo_summary to UNDERSTAND project overview
+
+For code changes/version control:
+→ Use git_add, git_commit, git_log for version control only
+
+WRONG: Using git_init or git_status to understand code
+RIGHT: Using search_code and file_summary to understand code
+
+=====================
+REASONING WORKFLOW
+=====================
+
+When answering questions about the codebase:
+1. Search for relevant code (search_code) OR use file_summary with file name
+2. If file_summary returns "file not found", use search_code to find the file first
+3. Read file summaries (file_summary) with resolved paths
+4. Gather context (repo_summary if needed)
+5. Analyze and answer based on findings
+
+Typical workflow for file questions:
+file_summary → if not found → search_code → file_summary with resolved path → analyze → answer
+
+Do NOT stop after one tool. Always use at least 2 different tools for codebase questions.
 
 =====================
 PATH RULES (STRICT)
@@ -95,10 +108,14 @@ PATH RULES (STRICT)
   "workspace" → if user mentions workspace
   "apps/agent" → for subfolders
 
+- File paths for file_summary can be:
+  - Simple filenames: "types.ts", "agentConfig.ts"
+  - Relative paths: "apps/agent/src/types.ts", "src/agentConfig.ts"
+
 - NEVER use system paths like:
   "/", "/usr", "/etc", "/bin"
 
-- Never omit repo_path.
+- Never omit repo_path for tools that require it.
 
 =====================
 FINAL ANSWERS
@@ -107,12 +124,12 @@ FINAL ANSWERS
 - Base answers ONLY on tool results.
 - Be specific to the project.
 - Reference actual implementation details when possible.
+- Include file paths and line numbers in your explanations.
 
 If no relevant information is found, say so instead of guessing.
 `;
 
 const MODEL_NAME = 'qwen2.5:1.5b';
-const MAX_TOOL_ROUNDS = 6;
 
 type ServerConfig = {
   id: string;
@@ -128,7 +145,7 @@ type ConnectedServer = {
 };
 
 class MCPClient {
-  private openai: OpenAI;
+  private groqAdapter: GroqAdapter;
   private servers: ConnectedServer[] = [];
   private toolToServer = new Map<
     string,
@@ -139,10 +156,7 @@ class MCPClient {
 
   constructor(config: AgentConfig) {
     this.config = config;
-    this.openai = new OpenAI({
-      baseURL: config.ollamaBaseUrl,
-      apiKey: 'ollama', // required but unused
-    });
+    this.groqAdapter = new GroqAdapter(config.apiKey || '', SYSTEM_PROMPT);
   }
 
   private registerServerTools(serverId: string, client: Client, tools: any[]) {
@@ -255,15 +269,17 @@ class MCPClient {
       });
 
       // STEP 2: Main reasoning loop
+      let lastRound = 0;
+      let phase1ForcedContinues = 0;
       for (let round = 0; round < this.config.maxTotalRounds; round++) {
-        // Call LLM
-        const response = await this.openai.chat.completions.create({
-          model: this.config.modelName,
-          messages: messages as any,
-          tools: this.tools,
-        });
+        lastRound = round;
+        // Call LLM via Groq adapter
+        const message = await this.groqAdapter.createMessage(
+          messages,
+          this.tools,
+          this.config.modelName
+        );
 
-        const message = (response?.choices[0]?.message) as any;
         if (!message) throw new Error('No response from model');
 
         messages.push(message as Message);
@@ -278,20 +294,32 @@ class MCPClient {
             });
 
             if (earlyExit) {
-              logPhaseForcedContinue('Agent attempted early exit from Phase 1', round);
+              phase1ForcedContinues++;
+              logPhaseForcedContinue(
+                `Agent attempted early exit from Phase 1 (attempt ${phase1ForcedContinues})`,
+                round
+              );
 
-              messages.push({
-                role: 'system',
-                content: `You must continue researching. You haven't yet gathered enough information about the codebase.
+              // After 3 forced continues, let agent answer anyway (fallback)
+              if (phase1ForcedContinues >= 3) {
+                logInfo(
+                  `Phase 1 forced continues exceeded threshold. Allowing answer with current research.`
+                );
+                phase1Complete = true;
+              } else {
+                messages.push({
+                  role: 'system',
+                  content: `You must continue researching. You haven't yet gathered enough information about the codebase.
 
-Current status: ${toolsCalled.length}/${this.config.phase1MinTools} tools used.
+Current status: ${toolsCalled.length}/${this.config.phase1MinTools} tools used, ${phase1ForcedContinues}/3 continue warnings.
 
-Continue by calling one of these tools:
+Use these research tools:
 ${classification.toolChain.slice(0, 3).join(', ')}
 
 Do NOT provide a final answer until you've thoroughly investigated the codebase.`,
-              });
-              continue;
+                });
+                continue;
+              }
             }
           }
 
@@ -366,6 +394,17 @@ Do NOT provide a final answer until you've thoroughly investigated the codebase.
             confidenceThreshold: this.config.phase1ConfidenceThreshold,
           });
 
+          // Log detailed validation info
+          logPhase1ValidationDetails({
+            uniqueTools: new Set(toolsCalled).size,
+            minToolsRequired: this.config.phase1MinTools,
+            confidence: phase1Result.confidence,
+            confidenceThreshold: this.config.phase1ConfidenceThreshold,
+            resultCount: (phase1Result.foundInformation as any)?.resultCount || 0,
+            reason: phase1Result.reason || '',
+            isComplete: phase1Result.isComplete,
+          });
+
           logPhaseProgress({
             phase: 'research',
             status: 'in_progress',
@@ -432,7 +471,35 @@ Continue investigating.`,
       }
 
       const durationMs = Date.now() - startTime;
-      logExecutionSummary(query, isCodebaseQuery, toolsCalled, this.config.maxTotalRounds, durationMs);
+      logExecutionSummary(query, isCodebaseQuery, toolsCalled, lastRound + 1, durationMs);
+      
+      // Force answer after max rounds instead of giving up
+      logInfo(`Max rounds reached (${lastRound + 1}/${this.config.maxTotalRounds}). Forcing final answer from agent.`);
+      
+      messages.push({
+        role: 'system',
+        content: `RESEARCH TIME LIMIT REACHED.
+
+You have used ${toolsCalled.length} different tools and gathered information from ${lastRound + 1} rounds.
+
+Based on your research so far, provide your best answer now. Even if you feel it's incomplete, 
+give your analysis based on what you've gathered. Do not perform more tool calls.
+
+Provide the final answer immediately.`,
+      });
+      
+      // One more LLM call to force the answer
+      const finalMessage = await this.groqAdapter.createMessage(
+        messages,
+        this.tools,
+        this.config.modelName
+      );
+      
+      if (finalMessage) {
+        logInfo(`Forced answer generated after ${lastRound + 1} rounds`);
+        return finalMessage.content ?? 'Unable to generate final answer.';
+      }
+      
       return 'Max tool rounds reached without final answer.';
     } catch (error) {
       logError('Error processing query', error);

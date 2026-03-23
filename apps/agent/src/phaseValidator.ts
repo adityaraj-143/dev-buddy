@@ -15,7 +15,7 @@ function extractToolCalls(messages: Message[]): string[] {
 
   for (const msg of messages) {
     if (msg.role === 'assistant' && msg.tool_calls) {
-      for (const call of msg.tool_calls) {
+      for (const call of msg.tool_calls as any) {
         toolCalls.push(call.function.name);
       }
     }
@@ -49,28 +49,32 @@ function extractToolResults(messages: Message[]): Array<{ name: string; content:
 
 /**
  * Calculate information quality score based on results
+ * 
+ * More generous scoring to avoid getting stuck in Phase 1
  */
 function calculateInformationQuality(results: Array<{ name: string; content: string }>): number {
   if (results.length === 0) return 0;
 
   let qualityScore = 0;
-  let totalContent = 0;
 
   for (const result of results) {
     const contentLength = result.content.length;
-    totalContent += contentLength;
 
-    // Longer results = more information
-    if (contentLength > 100) qualityScore += 0.3;
-    else if (contentLength > 50) qualityScore += 0.15;
-    else if (contentLength > 0) qualityScore += 0.05;
+    // More generous scoring per result
+    if (contentLength > 500) qualityScore += 0.5;    // Very detailed result
+    else if (contentLength > 200) qualityScore += 0.4; // Good result
+    else if (contentLength > 100) qualityScore += 0.3; // Decent result
+    else if (contentLength > 50) qualityScore += 0.2;  // Minimal result
+    else if (contentLength > 0) qualityScore += 0.1;   // Very minimal
   }
 
-  // Average quality per result
-  const avgQuality = qualityScore / results.length;
-
-  // Normalize to 0-1
-  return Math.min(avgQuality, 1);
+  // Base score on number of results + individual quality
+  // Multiple results with even modest info = good progress
+  const baseScore = Math.min(results.length * 0.2, 0.4); // Up to 0.4 from quantity
+  const qualityPerResult = qualityScore / results.length;
+  
+  // Combined: benefits from both quantity and quality
+  return Math.min(baseScore + qualityPerResult, 1);
 }
 
 /**
@@ -114,8 +118,8 @@ function calculateConfidence(
  * Validate Phase 1 completion
  * 
  * Phase 1 is considered complete if:
- * 1. At least 2 different tools called, OR confidence >= 0.6
- * 2. At least 1 non-empty result received
+ * - At least minTools different tools called (STRICT requirement)
+ * - High confidence is NOT enough on its own
  */
 export function validatePhase1Completion(
   messages: Message[],
@@ -130,10 +134,10 @@ export function validatePhase1Completion(
   const uniqueTools = new Set(toolCalls).size;
   const confidence = calculateConfidence(toolCalls, results);
 
-  // Completion logic: (2+ tools) OR (confident result)
+  // Completion logic: MUST have minTools, confidence alone is not enough
+  // This prevents hallucinating one wrong tool and getting high confidence
   const hasEnoughTools = uniqueTools >= minTools;
-  const hasHighConfidence = confidence >= confidenceThreshold;
-  const isComplete = hasEnoughTools || (hasHighConfidence && results.length > 0);
+  const isComplete = hasEnoughTools && results.length > 0;
 
   // Build information map
   const foundInformation: Record<string, unknown> = {
@@ -152,13 +156,9 @@ export function validatePhase1Completion(
   // Determine reason
   let reason = '';
   if (isComplete) {
-    if (hasEnoughTools) {
-      reason = `Sufficient tools executed (${uniqueTools} >= ${minTools})`;
-    } else {
-      reason = `High confidence result (${confidence.toFixed(2)} >= ${confidenceThreshold})`;
-    }
+    reason = `Research complete: ${uniqueTools} tools used (${minTools} required)`;
   } else {
-    reason = `Need more research: ${uniqueTools}/${minTools} tools, confidence ${confidence.toFixed(2)} < ${confidenceThreshold}`;
+    reason = `Need more research: ${uniqueTools}/${minTools} tools used, confidence ${confidence.toFixed(2)}`;
   }
 
   return {
