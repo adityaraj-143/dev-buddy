@@ -22,6 +22,50 @@ export class GroqAdapter {
   }
 
   /**
+   * Prioritize and filter tools to send to the model
+   * Groq models work best with a focused set of tools
+   */
+  private prioritizeTools(allTools: any[], maxTools: number = 10): any[] {
+    if (!allTools || allTools.length === 0) return [];
+    if (allTools.length <= maxTools) return allTools;
+
+    // Priority order for code analysis tools
+    const priorityOrder = [
+      'search_files',
+      'file_summary', 
+      'search_code',
+      'repo_summary',
+      'repo_tree',
+      'git_log',
+      'git_diff',
+      'git_show',
+      'git_status',
+    ];
+
+    const prioritized: any[] = [];
+    const remaining: any[] = [];
+
+    // First, add high-priority tools
+    for (const priorityName of priorityOrder) {
+      const tool = allTools.find((t: any) => t.function?.name === priorityName);
+      if (tool && prioritized.length < maxTools) {
+        prioritized.push(tool);
+      }
+    }
+
+    // Fill remaining slots with other tools
+    for (const tool of allTools) {
+      if (!prioritized.find((t: any) => t.function?.name === tool.function?.name)) {
+        if (prioritized.length < maxTools) {
+          prioritized.push(tool);
+        }
+      }
+    }
+
+    return prioritized;
+  }
+
+  /**
    * Call Groq API with OpenAI-compatible interface
    */
   async createMessage(
@@ -66,8 +110,8 @@ export class GroqAdapter {
       }
     }
 
-    // Limit tools sent to Groq - sometimes too many tools confuses the model
-    const toolsToSend = tools && tools.length > 0 ? tools.slice(0, 8) : undefined;
+    // Limit tools sent to Groq - use prioritized subset for better performance
+    const toolsToSend = this.prioritizeTools(tools, 10);
 
     try {
       // Call Groq API with tool_choice='auto' to ensure tool calling is enabled
@@ -75,9 +119,9 @@ export class GroqAdapter {
         model: modelName,
         max_tokens: 4096,
         messages: openaiMessages,
-        tools: toolsToSend,
-        tool_choice: toolsToSend ? 'auto' : undefined, // Only set if tools are present
-      } as any); // Cast as any because OpenAI SDK might not have all properties
+        tools: toolsToSend.length > 0 ? toolsToSend : undefined,
+        tool_choice: toolsToSend.length > 0 ? 'auto' : undefined,
+      } as any);
 
       // Convert response back to Message format
       const choice = response.choices[0];
@@ -100,6 +144,14 @@ export class GroqAdapter {
 
       return message;
     } catch (error: any) {
+      // Log detailed error information
+      console.error('[GROQ_ADAPTER] Error calling Groq API:');
+      console.error('Error type:', error?.constructor?.name);
+      console.error('Error message:', error?.message);
+      console.error('Error code:', error?.error?.code);
+      console.error('Error status:', error?.status);
+      console.error('Full error:', JSON.stringify(error, null, 2));
+      
       // If tool calling fails, retry without tools
       if (error?.error?.code === 'tool_use_failed' && toolsToSend) {
         this.toolCallFailureCount++;
