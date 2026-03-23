@@ -37,7 +37,7 @@ export interface ExecutionContext {
 const TOOL_PATTERNS = {
   // Specific file mentioned (e.g., "show me context.py")
   specificFile: {
-    primaryTools: ['search_files', 'file_summary'],
+    primaryTools: ['find_files', 'file_summary'],
     secondaryTools: ['search_code', 'git_log'],
     reasoning: 'User mentioned specific file - locate then read it',
     expectedRounds: 2,
@@ -46,7 +46,7 @@ const TOOL_PATTERNS = {
   // Implementation query (e.g., "how does X work")
   implementation: {
     primaryTools: ['search_code', 'file_summary'],
-    secondaryTools: ['repo_tree', 'git_log'],
+    secondaryTools: ['find_files', 'repo_tree', 'git_log'],
     reasoning: 'Implementation question - search code then read files',
     expectedRounds: 3,
   },
@@ -54,7 +54,7 @@ const TOOL_PATTERNS = {
   // Structure/organization query (e.g., "project structure")
   structure: {
     primaryTools: ['repo_summary', 'repo_tree'],
-    secondaryTools: ['file_summary', 'search_files'],
+    secondaryTools: ['file_summary', 'find_files'],
     reasoning: 'Structural question - get overview and tree',
     expectedRounds: 2,
   },
@@ -62,7 +62,7 @@ const TOOL_PATTERNS = {
   // Function/class lookup (e.g., "find function X")
   lookup: {
     primaryTools: ['search_code', 'file_summary'],
-    secondaryTools: ['search_files'],
+    secondaryTools: ['find_files'],
     reasoning: 'Code lookup - search for definition then read context',
     expectedRounds: 2,
   },

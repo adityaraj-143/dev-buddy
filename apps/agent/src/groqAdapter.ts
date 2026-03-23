@@ -31,15 +31,16 @@ export class GroqAdapter {
 
     // Priority order for code analysis tools
     const priorityOrder = [
-      'search_files',
-      'file_summary', 
-      'search_code',
-      'repo_summary',
-      'repo_tree',
-      'git_log',
-      'git_diff',
-      'git_show',
-      'git_status',
+      'find_files',      // Glob-based file finder (most important for file queries)
+      'file_summary',    // Read file contents
+      'search_code',     // Search code patterns
+      'search_files',    // Search file contents (renamed from content search)
+      'repo_summary',    // Repo overview
+      'repo_tree',       // Directory structure
+      'git_log',         // Git history
+      'git_diff',        // Git changes
+      'git_show',        // Git commit details
+      'git_status',      // Git status
     ];
 
     const prioritized: any[] = [];

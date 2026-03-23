@@ -39,7 +39,7 @@ export function generateSystemPrompt(availableTools: string[]): string {
 **Available Tools**: ${toolsList}
 
 ## For File-Specific Queries ("show me file.py")
-1. search_files → locate exact path
+1. find_files → locate exact path using glob/filename
 2. file_summary → read contents
 3. search_code (optional) → find related code
 
@@ -65,7 +65,7 @@ export function generateSystemPrompt(availableTools: string[]): string {
 
 # Critical Rules
 
-⚠️ **File Path Resolution**: When users mention files, ALWAYS use search_files first to locate them - files may be in subdirectories, not at repo root
+⚠️ **File Finding**: When users mention specific files, ALWAYS use find_files first to locate them - NOT search_files (which searches content, not filenames)
 
 ⚠️ **No Hallucination**: Never invent file names, functions, or code. If you don't have information, use tools to find it or state it's missing
 

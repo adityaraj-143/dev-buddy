@@ -190,10 +190,10 @@ function suggestToolChain(
   // Check if query mentions specific files
   const mentionedFiles = extractFileNamesFromQuery(query);
   
-  // If specific files are mentioned, START with search_files/search_code
-  // This helps find files that aren't at the repo root
+  // If specific files are mentioned, START with find_files
+  // find_files uses glob to locate files by name, not content search
   if (mentionedFiles.length > 0) {
-    tools.push('search_files', 'search_code', 'file_summary');
+    tools.push('find_files', 'file_summary', 'search_code');
     return tools;
   }
 

@@ -252,6 +252,7 @@ export function suggestNextTool(
 
   // Fallback to original priority-based suggestion
   const priorityTools = [
+    'find_files',
     'search_code',
     'file_summary',
     'repo_summary',
