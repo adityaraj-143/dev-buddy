@@ -46,9 +46,17 @@ class SearchInput(SearchBase):
     query: str = Field(..., description="Case-insensitive text to search for")
 
 
+class FindFilesInput(SearchBase):
+    pattern: str = Field(
+        ...,
+        description="Glob pattern or filename to search for (e.g., '*.py', 'context.py', '**/*.ts')",
+    )
+
+
 class SearchTools(str, Enum):
     SEARCH_FILES = "search_files"
     SEARCH_CODE = "search_code"
+    FIND_FILES = "find_files"
 
 
 def is_blocked(path: Path) -> bool:
@@ -125,6 +133,77 @@ def search_code_snippets(repo_path: Path, query: str) -> list[str]:
     return results[:30]
 
 
+def find_files_by_pattern(repo_path: Path, pattern: str) -> list[str]:
+    """
+    Find files matching a glob pattern or filename.
+
+    Supports:
+    - Exact filename: "context.py" -> finds all files named context.py
+    - Glob patterns: "*.py", "**/*.ts", "src/**/*.js"
+    - Partial names: "context" -> finds files containing "context" in the name
+    """
+    results: list[str] = []
+
+    # If pattern contains glob characters, use glob matching
+    if any(c in pattern for c in ["*", "?", "["]):
+        # Use recursive glob
+        for file_path in repo_path.rglob(pattern):
+            if file_path.is_file() and not file_path.is_symlink():
+                # Skip hidden files and common ignore patterns
+                parts = file_path.relative_to(repo_path).parts
+                if any(
+                    p.startswith(".")
+                    or p
+                    in [
+                        "node_modules",
+                        "__pycache__",
+                        ".git",
+                        "dist",
+                        "build",
+                        ".venv",
+                        "venv",
+                    ]
+                    for p in parts
+                ):
+                    continue
+                results.append(str(file_path))
+    else:
+        # Search for files matching the exact name or containing the pattern
+        pattern_lower = pattern.lower()
+        for file_path in repo_path.rglob("*"):
+            if not file_path.is_file() or file_path.is_symlink():
+                continue
+
+            # Skip hidden files and common ignore patterns
+            parts = file_path.relative_to(repo_path).parts
+            if any(
+                p.startswith(".")
+                or p
+                in [
+                    "node_modules",
+                    "__pycache__",
+                    ".git",
+                    "dist",
+                    "build",
+                    ".venv",
+                    "venv",
+                ]
+                for p in parts
+            ):
+                continue
+
+            filename = file_path.name.lower()
+
+            # Exact match has highest priority
+            if filename == pattern_lower:
+                results.insert(0, str(file_path))
+            # Partial match
+            elif pattern_lower in filename:
+                results.append(str(file_path))
+
+    return results[:50]
+
+
 async def serve(repository: Path | None) -> None:
     logger = logging.getLogger(__name__)
     base_root = repository.resolve() if repository else DEFAULT_REPO_ROOT
@@ -155,9 +234,27 @@ async def serve(repository: Path | None) -> None:
     async def list_tools() -> list[Tool]:
         return [
             Tool(
+                name=SearchTools.FIND_FILES,
+                description="""
+Find files by name using glob patterns or exact filename.
+
+Examples:
+- "context.py" -> finds all files named context.py
+- "*.py" -> finds all Python files
+- "**/*.ts" -> finds all TypeScript files recursively
+- "index" -> finds files containing "index" in the name
+
+Returns matching file paths sorted by relevance (exact matches first).
+""",
+                inputSchema=FindFilesInput.model_json_schema(),
+            ),
+            Tool(
                 name=SearchTools.SEARCH_FILES,
                 description="""
 Search for files whose contents include a query string.
+
+Use this to find files that CONTAIN specific text inside them.
+For finding files by NAME, use find_files instead.
 
 Returns matching file paths.
 """,
@@ -185,6 +282,14 @@ Returns file, line number, and matching snippet.
             raise ValueError(f"Repository path is not a directory: {repo_path}")
 
         match name:
+            case SearchTools.FIND_FILES:
+                matches = find_files_by_pattern(repo_path, arguments["pattern"])
+                if matches:
+                    text = "\n".join(matches)
+                else:
+                    text = f"No files found matching pattern: {arguments['pattern']}"
+                return [TextContent(type="text", text=text)]
+
             case SearchTools.SEARCH_FILES:
                 matches = search_files_by_content(repo_path, arguments["query"])
                 text = "\n".join(matches)
@@ -206,7 +311,9 @@ Returns file, line number, and matching snippet.
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run MCP Search tools server over stdio")
+    parser = argparse.ArgumentParser(
+        description="Run MCP Search tools server over stdio"
+    )
     parser.add_argument(
         "repository",
         nargs="?",

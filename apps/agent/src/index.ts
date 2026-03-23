@@ -6,6 +6,7 @@ import path from 'path';
 
 import { loadConfig, validateConfig } from './agentConfig';
 import { GroqAdapter } from './groqAdapter';
+import { getFileResolutionContext, findRepoRoot } from './filePathResolver';
 import {
   logQueryClassification,
   logPhaseProgress,
@@ -21,6 +22,11 @@ import {
 } from './agentLogger';
 import { classifyQuery } from './queryClassifier';
 import { validatePhase1Completion, suggestNextTool, isEarlyExit } from './phaseValidator';
+import { 
+  generateSystemPrompt, 
+  PHASE_PROMPTS, 
+  generateContextPrompt 
+} from './systemPrompt';
 import type {
   AgentConfig,
   Message,
@@ -29,107 +35,6 @@ import type {
 } from './types';
 
 dotenv.config();
-
-const SYSTEM_PROMPT = `You are an MCP-powered coding assistant with access to tools for interacting with a local codebase.
-
-Your primary job is to understand and analyze THIS project using tools. You must rely on tools instead of prior knowledge whenever the question is about the codebase.
-
-=====================
-CRITICAL RULES
-=====================
-
-1. If the question is about THIS project, ALWAYS use tools before answering.
-2. NEVER answer project-related questions from general knowledge.
-3. Always gather information from the repository using tools.
-4. ONLY use git tools (git_init, git_status, git_commit, etc.) for actual version control operations.
-5. DO NOT use git tools to explore or explain code - use search_code and file_summary instead.
-6. If unsure where to start, use search_code to find relevant files.
-
-=====================
-FILE NAME RESOLUTION
-=====================
-
-When users ask about specific files (e.g., "explain types.ts"), you should:
-
-1. If the file name is provided explicitly (like "types.ts"), use it directly in file_summary
-   Example: file_summary with file_path="types.ts" or "apps/agent/src/types.ts"
-
-2. If you get a "file not found" error from file_summary:
-   - Try the file name with just the filename (no path): "types.ts"
-   - Try with partial paths: "agent/types.ts" or "src/types.ts"
-   - Use search_code to locate the file first, then use file_summary with the resolved path
-
-3. File names are NOT always at the repository root. Common locations:
-   - ./src/ - Source files
-   - ./apps/agent/src/ - Agent-specific code
-   - ./packages/ - Package files
-   - ./mcp-servers/ - MCP server implementations
-
-IMPORTANT: Always resolve file paths when file_summary returns "file not found"
-
-=====================
-TOOL SELECTION GUIDE
-=====================
-
-For explaining code or understanding implementations:
-→ Use search_code to FIND relevant files/functions
-→ Use file_summary to UNDERSTAND file structure
-→ Use repo_summary to UNDERSTAND project overview
-
-For code changes/version control:
-→ Use git_add, git_commit, git_log for version control only
-
-WRONG: Using git_init or git_status to understand code
-RIGHT: Using search_code and file_summary to understand code
-
-=====================
-REASONING WORKFLOW
-=====================
-
-When answering questions about the codebase:
-1. Search for relevant code (search_code) OR use file_summary with file name
-2. If file_summary returns "file not found", use search_code to find the file first
-3. Read file summaries (file_summary) with resolved paths
-4. Gather context (repo_summary if needed)
-5. Analyze and answer based on findings
-
-Typical workflow for file questions:
-file_summary → if not found → search_code → file_summary with resolved path → analyze → answer
-
-Do NOT stop after one tool. Always use at least 2 different tools for codebase questions.
-
-=====================
-PATH RULES (STRICT)
-=====================
-
-- ALL tool calls requiring "repo_path" MUST include it.
-- Use:
-  "." → for project root
-  "workspace" → if user mentions workspace
-  "apps/agent" → for subfolders
-
-- File paths for file_summary can be:
-  - Simple filenames: "types.ts", "agentConfig.ts"
-  - Relative paths: "apps/agent/src/types.ts", "src/agentConfig.ts"
-
-- NEVER use system paths like:
-  "/", "/usr", "/etc", "/bin"
-
-- Never omit repo_path for tools that require it.
-
-=====================
-FINAL ANSWERS
-=====================
-
-- Base answers ONLY on tool results.
-- Be specific to the project.
-- Reference actual implementation details when possible.
-- Include file paths and line numbers in your explanations.
-
-If no relevant information is found, say so instead of guessing.
-`;
-
-const MODEL_NAME = 'qwen2.5:1.5b';
 
 type ServerConfig = {
   id: string;
@@ -153,10 +58,12 @@ class MCPClient {
   >();
   private tools: any[] = [];
   private config: AgentConfig;
+  private systemPrompt: string = '';
 
   constructor(config: AgentConfig) {
     this.config = config;
-    this.groqAdapter = new GroqAdapter(config.apiKey || '', SYSTEM_PROMPT);
+    // System prompt will be generated after tools are registered
+    this.groqAdapter = new GroqAdapter(config.apiKey || '', '');
   }
 
   private registerServerTools(serverId: string, client: Client, tools: any[]) {
@@ -216,6 +123,13 @@ class MCPClient {
     if (this.servers.length === 0) {
       throw new Error('No MCP servers could be connected');
     }
+
+    // Generate system prompt now that we know available tools
+    const toolNames = this.tools.map((t) => t.function.name);
+    this.systemPrompt = generateSystemPrompt(toolNames);
+    this.groqAdapter = new GroqAdapter(this.config.apiKey || '', this.systemPrompt);
+    
+    logInfo(`System prompt generated with ${toolNames.length} tools: ${toolNames.join(', ')}`);
   }
 
   private toolResultToString(content: unknown): string {
@@ -241,6 +155,37 @@ class MCPClient {
     return JSON.stringify(content);
   }
 
+  /**
+   * Resolve file paths in tool arguments using the filePathResolver
+   * This ensures that relative file paths like "context.py" get resolved to absolute paths
+   */
+  private resolveFilePathsInArgs(toolName: string, args: Record<string, any>): Record<string, any> {
+    // Only process file_summary and search_files tools
+    if (!['file_summary', 'search_files', 'search-files'].includes(toolName)) {
+      return args;
+    }
+
+    const repoRoot = findRepoRoot();
+    const resolvedArgs = { ...args };
+
+    // Try to resolve file_path argument
+    if ('file_path' in resolvedArgs && typeof resolvedArgs.file_path === 'string') {
+      const filePath = resolvedArgs.file_path;
+      
+      // Only resolve if it looks like a relative path without full context
+      if (!filePath.startsWith('/') && !filePath.startsWith('.') && 
+          (filePath.includes('.') || filePath.length < 30)) {
+        const resolution = getFileResolutionContext(filePath, repoRoot);
+        if (resolution) {
+          resolvedArgs.file_path = resolution.filePath;
+          logInfo(`Resolved file path: "${filePath}" → "${resolution.filePath}"`);
+        }
+      }
+    }
+
+    return resolvedArgs;
+  }
+
   async processQuery(query: string) {
     const startTime = Date.now();
 
@@ -250,7 +195,7 @@ class MCPClient {
       logQueryClassification(query, classification);
 
       const messages: Message[] = [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: this.systemPrompt },
         { role: 'user', content: query },
       ];
 
@@ -307,16 +252,14 @@ class MCPClient {
                 );
                 phase1Complete = true;
               } else {
+                const uniqueToolsUsed = new Set(toolsCalled).size;
                 messages.push({
                   role: 'system',
-                  content: `You must continue researching. You haven't yet gathered enough information about the codebase.
-
-Current status: ${toolsCalled.length}/${this.config.phase1MinTools} tools used, ${phase1ForcedContinues}/3 continue warnings.
-
-Use these research tools:
-${classification.toolChain.slice(0, 3).join(', ')}
-
-Do NOT provide a final answer until you've thoroughly investigated the codebase.`,
+                  content: PHASE_PROMPTS.continueResearch(
+                    uniqueToolsUsed,
+                    this.config.phase1MinTools,
+                    phase1ForcedContinues
+                  ),
                 });
                 continue;
               }
@@ -346,10 +289,13 @@ Do NOT provide a final answer until you've thoroughly investigated the codebase.
             throw new Error(`No MCP server registered for tool '${toolName}'`);
           }
 
+          // Resolve file paths in tool arguments before execution
+          const resolvedArgs = this.resolveFilePathsInArgs(toolName, toolArgs);
+
           try {
             const result = await targetTool.client.callTool({
               name: targetTool.toolName,
-              arguments: toolArgs,
+              arguments: resolvedArgs,
             });
 
             const toolResult = this.toolResultToString(result.content);
@@ -389,9 +335,12 @@ Do NOT provide a final answer until you've thoroughly investigated the codebase.
 
         // STEP 5: Validate Phase 1 completion if codebase query
         if (isCodebaseQuery && !phase1Complete) {
+          const availableToolNames = this.tools.map((t) => t.function.name);
           const phase1Result = validatePhase1Completion(messages, {
             minTools: this.config.phase1MinTools,
             confidenceThreshold: this.config.phase1ConfidenceThreshold,
+            classification: classification,
+            availableTools: availableToolNames,
           });
 
           // Log detailed validation info
@@ -423,39 +372,39 @@ Do NOT provide a final answer until you've thoroughly investigated the codebase.
 
             messages.push({
               role: 'system',
-              content: `PHASE_1_RESEARCH_COMPLETE.
-
-You have gathered sufficient information about the codebase. Now move to PHASE 2:
-- Analyze your findings
-- Provide a comprehensive answer grounded in the actual code
-- Reference specific files and line numbers from what you discovered
-- Base your answer entirely on what you found with the tools, not general knowledge
-
-Provide the final answer now.`,
+              content: PHASE_PROMPTS.phase1Complete(
+                Array.from(new Set(toolsCalled)),
+                phase1Result.confidence
+              ),
             });
           } else {
             // Still need more research
-            const nextTool = suggestNextTool(messages, this.tools.map((t) => t.function.name));
+            const availableToolNames = this.tools.map((t) => t.function.name);
+            const nextTool = suggestNextTool(messages, availableToolNames, classification);
 
             messages.push({
               role: 'system',
-              content: `Continue Phase 1 research. You have gathered some information but need more.
-
-Current progress: ${phase1Result.confidence.toFixed(2)} confidence
-Tools used: ${Array.from(new Set(toolsCalled)).join(', ')}
-
-Next step: Use ${nextTool.suggestion} to gather more details.
-Reasoning: ${nextTool.reasoning}
-
-Continue investigating.`,
+              content: PHASE_PROMPTS.needMoreResearch(
+                phase1Result.confidence,
+                Array.from(new Set(toolsCalled)),
+                nextTool.suggestion,
+                nextTool.reasoning
+              ),
             });
           }
         } else {
-          // Non-codebase query or Phase 2 - normal continuation
+          // Non-codebase query or Phase 2 - use context-aware prompting
+          const contextPrompt = generateContextPrompt({
+            phase: phase1Complete ? 'analysis' : 'research',
+            round,
+            toolsCalled: Array.from(new Set(toolsCalled)),
+            isCodebaseQuery,
+            classification,
+          });
+          
           messages.push({
             role: 'system',
-            content:
-              'Continue reasoning. Use more tools if needed. If you have enough information, provide the final answer.',
+            content: contextPrompt,
           });
         }
 
@@ -478,14 +427,7 @@ Continue investigating.`,
       
       messages.push({
         role: 'system',
-        content: `RESEARCH TIME LIMIT REACHED.
-
-You have used ${toolsCalled.length} different tools and gathered information from ${lastRound + 1} rounds.
-
-Based on your research so far, provide your best answer now. Even if you feel it's incomplete, 
-give your analysis based on what you've gathered. Do not perform more tool calls.
-
-Provide the final answer immediately.`,
+        content: PHASE_PROMPTS.forceAnswer(lastRound + 1, toolsCalled.length),
       });
       
       // One more LLM call to force the answer
@@ -542,12 +484,13 @@ async function main() {
   const gitRepo = process.env.MCP_GIT_REPO ?? repoRoot;
 
   const serverConfigs: ServerConfig[] = [
-    {
-      id: 'filesystem',
-      command: 'uv',
-      args: ['run', 'python', 'filesystem.py', filesystemRoot],
-      cwd: coreCwd,
-    },
+    // Disabled: Use search.py instead for better search_files tool
+    // {
+    //   id: 'filesystem',
+    //   command: 'uv',
+    //   args: ['run', 'python', 'filesystem.py', filesystemRoot],
+    //   cwd: coreCwd,
+    // },
     {
       id: 'git',
       command: 'uv',

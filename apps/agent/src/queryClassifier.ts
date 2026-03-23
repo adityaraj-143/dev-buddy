@@ -190,17 +190,11 @@ function suggestToolChain(
   // Check if query mentions specific files
   const mentionedFiles = extractFileNamesFromQuery(query);
   
-  // If specific files are mentioned, add file_summary to tools
+  // If specific files are mentioned, START with find_files
+  // find_files uses glob to locate files by name, not content search
   if (mentionedFiles.length > 0) {
-    // Try to resolve the files - if found, they can be passed directly to file_summary
-    const resolvedFiles = mentionedFiles
-      .map(f => resolveFilePath(f, '.'))
-      .filter(r => r.found);
-    
-    if (resolvedFiles.length > 0) {
-      tools.push('file_summary', 'search_code');
-      return tools;
-    }
+    tools.push('find_files', 'file_summary', 'search_code');
+    return tools;
   }
 
   // If asking about structure/files
