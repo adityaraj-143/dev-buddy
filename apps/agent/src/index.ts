@@ -22,6 +22,11 @@ import {
 } from './agentLogger';
 import { classifyQuery } from './queryClassifier';
 import { validatePhase1Completion, suggestNextTool, isEarlyExit } from './phaseValidator';
+import { 
+  generateSystemPrompt, 
+  PHASE_PROMPTS, 
+  generateContextPrompt 
+} from './systemPrompt';
 import type {
   AgentConfig,
   Message,
@@ -30,22 +35,6 @@ import type {
 } from './types';
 
 dotenv.config();
-
-const SYSTEM_PROMPT = `You are a helpful assistant with access to tools for analyzing code in a local repository.
-
-When users ask about files or code, use the available tools to find and analyze them.
-
-IMPORTANT: When asked about specific files (like "context.py"):
-1. Use search_files to find the file
-2. Use file_summary to read the file
-3. Provide analysis based on what you find
-
-Available tools: search_files, search_code, file_summary, repo_tree, repo_summary, git_log, git_status, git_diff
-
-Always base your answers on actual information from the tools, not assumptions.
-`;
-
-const MODEL_NAME = 'qwen2.5:1.5b';
 
 type ServerConfig = {
   id: string;
@@ -69,10 +58,12 @@ class MCPClient {
   >();
   private tools: any[] = [];
   private config: AgentConfig;
+  private systemPrompt: string = '';
 
   constructor(config: AgentConfig) {
     this.config = config;
-    this.groqAdapter = new GroqAdapter(config.apiKey || '', SYSTEM_PROMPT);
+    // System prompt will be generated after tools are registered
+    this.groqAdapter = new GroqAdapter(config.apiKey || '', '');
   }
 
   private registerServerTools(serverId: string, client: Client, tools: any[]) {
@@ -132,6 +123,13 @@ class MCPClient {
     if (this.servers.length === 0) {
       throw new Error('No MCP servers could be connected');
     }
+
+    // Generate system prompt now that we know available tools
+    const toolNames = this.tools.map((t) => t.function.name);
+    this.systemPrompt = generateSystemPrompt(toolNames);
+    this.groqAdapter = new GroqAdapter(this.config.apiKey || '', this.systemPrompt);
+    
+    logInfo(`System prompt generated with ${toolNames.length} tools: ${toolNames.join(', ')}`);
   }
 
   private toolResultToString(content: unknown): string {
@@ -197,7 +195,7 @@ class MCPClient {
       logQueryClassification(query, classification);
 
       const messages: Message[] = [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: this.systemPrompt },
         { role: 'user', content: query },
       ];
 
@@ -254,16 +252,14 @@ class MCPClient {
                 );
                 phase1Complete = true;
               } else {
+                const uniqueToolsUsed = new Set(toolsCalled).size;
                 messages.push({
                   role: 'system',
-                  content: `You must continue researching. You haven't yet gathered enough information about the codebase.
-
-Current status: ${toolsCalled.length}/${this.config.phase1MinTools} tools used, ${phase1ForcedContinues}/3 continue warnings.
-
-Use these research tools:
-${classification.toolChain.slice(0, 3).join(', ')}
-
-Do NOT provide a final answer until you've thoroughly investigated the codebase.`,
+                  content: PHASE_PROMPTS.continueResearch(
+                    uniqueToolsUsed,
+                    this.config.phase1MinTools,
+                    phase1ForcedContinues
+                  ),
                 });
                 continue;
               }
@@ -339,9 +335,12 @@ Do NOT provide a final answer until you've thoroughly investigated the codebase.
 
         // STEP 5: Validate Phase 1 completion if codebase query
         if (isCodebaseQuery && !phase1Complete) {
+          const availableToolNames = this.tools.map((t) => t.function.name);
           const phase1Result = validatePhase1Completion(messages, {
             minTools: this.config.phase1MinTools,
             confidenceThreshold: this.config.phase1ConfidenceThreshold,
+            classification: classification,
+            availableTools: availableToolNames,
           });
 
           // Log detailed validation info
@@ -373,39 +372,39 @@ Do NOT provide a final answer until you've thoroughly investigated the codebase.
 
             messages.push({
               role: 'system',
-              content: `PHASE_1_RESEARCH_COMPLETE.
-
-You have gathered sufficient information about the codebase. Now move to PHASE 2:
-- Analyze your findings
-- Provide a comprehensive answer grounded in the actual code
-- Reference specific files and line numbers from what you discovered
-- Base your answer entirely on what you found with the tools, not general knowledge
-
-Provide the final answer now.`,
+              content: PHASE_PROMPTS.phase1Complete(
+                Array.from(new Set(toolsCalled)),
+                phase1Result.confidence
+              ),
             });
           } else {
             // Still need more research
-            const nextTool = suggestNextTool(messages, this.tools.map((t) => t.function.name));
+            const availableToolNames = this.tools.map((t) => t.function.name);
+            const nextTool = suggestNextTool(messages, availableToolNames, classification);
 
             messages.push({
               role: 'system',
-              content: `Continue Phase 1 research. You have gathered some information but need more.
-
-Current progress: ${phase1Result.confidence.toFixed(2)} confidence
-Tools used: ${Array.from(new Set(toolsCalled)).join(', ')}
-
-Next step: Use ${nextTool.suggestion} to gather more details.
-Reasoning: ${nextTool.reasoning}
-
-Continue investigating.`,
+              content: PHASE_PROMPTS.needMoreResearch(
+                phase1Result.confidence,
+                Array.from(new Set(toolsCalled)),
+                nextTool.suggestion,
+                nextTool.reasoning
+              ),
             });
           }
         } else {
-          // Non-codebase query or Phase 2 - normal continuation
+          // Non-codebase query or Phase 2 - use context-aware prompting
+          const contextPrompt = generateContextPrompt({
+            phase: phase1Complete ? 'analysis' : 'research',
+            round,
+            toolsCalled: Array.from(new Set(toolsCalled)),
+            isCodebaseQuery,
+            classification,
+          });
+          
           messages.push({
             role: 'system',
-            content:
-              'Continue reasoning. Use more tools if needed. If you have enough information, provide the final answer.',
+            content: contextPrompt,
           });
         }
 
@@ -428,14 +427,7 @@ Continue investigating.`,
       
       messages.push({
         role: 'system',
-        content: `RESEARCH TIME LIMIT REACHED.
-
-You have used ${toolsCalled.length} different tools and gathered information from ${lastRound + 1} rounds.
-
-Based on your research so far, provide your best answer now. Even if you feel it's incomplete, 
-give your analysis based on what you've gathered. Do not perform more tool calls.
-
-Provide the final answer immediately.`,
+        content: PHASE_PROMPTS.forceAnswer(lastRound + 1, toolsCalled.length),
       });
       
       // One more LLM call to force the answer

@@ -5,7 +5,13 @@
  * to move from Phase 1 (Research) to Phase 2 (Analysis).
  */
 
-import type { Message, ResearchPhaseResult } from './types';
+import type { Message, ResearchPhaseResult, QueryClassification } from './types';
+import { 
+  generateToolStrategy, 
+  evaluateToolCoverage,
+  type ExecutionContext,
+  type ToolStrategy 
+} from './toolOrchestrator';
 
 /**
  * Extract all tool calls from message history
@@ -115,15 +121,21 @@ function calculateConfidence(
 }
 
 /**
- * Validate Phase 1 completion
+ * Validate Phase 1 completion with tool strategy awareness
  * 
  * Phase 1 is considered complete if:
  * - At least minTools different tools called (STRICT requirement)
+ * - Tool coverage for the query type is sufficient
  * - High confidence is NOT enough on its own
  */
 export function validatePhase1Completion(
   messages: Message[],
-  config?: { minTools?: number; confidenceThreshold?: number }
+  config?: { 
+    minTools?: number; 
+    confidenceThreshold?: number;
+    classification?: QueryClassification;
+    availableTools?: string[];
+  }
 ): ResearchPhaseResult {
   const minTools = config?.minTools ?? 2;
   const confidenceThreshold = config?.confidenceThreshold ?? 0.6;
@@ -134,10 +146,31 @@ export function validatePhase1Completion(
   const uniqueTools = new Set(toolCalls).size;
   const confidence = calculateConfidence(toolCalls, results);
 
+  // Enhanced validation with tool strategy if available
+  let strategicValidation = { isSufficient: true, coverage: 1, missingCritical: [] as string[] };
+  
+  if (config?.classification && config?.availableTools) {
+    const strategy = generateToolStrategy(
+      '', // query not needed, classification has it
+      config.classification,
+      config.availableTools
+    );
+    
+    const context: ExecutionContext = {
+      toolsCalled: toolCalls,
+      messages,
+      classification: config.classification,
+      phase: 'research',
+    };
+    
+    strategicValidation = evaluateToolCoverage(context, strategy);
+  }
+
   // Completion logic: MUST have minTools, confidence alone is not enough
   // This prevents hallucinating one wrong tool and getting high confidence
   const hasEnoughTools = uniqueTools >= minTools;
-  const isComplete = hasEnoughTools && results.length > 0;
+  const hasStrategicCoverage = strategicValidation.isSufficient;
+  const isComplete = hasEnoughTools && results.length > 0 && hasStrategicCoverage;
 
   // Build information map
   const foundInformation: Record<string, unknown> = {
@@ -146,6 +179,8 @@ export function validatePhase1Completion(
     totalToolCalls: toolCalls.length,
     resultCount: results.length,
     hasResults: results.length > 0,
+    strategicCoverage: strategicValidation.coverage,
+    missingCriticalTools: strategicValidation.missingCritical,
   };
 
   // Add content summaries
@@ -156,9 +191,13 @@ export function validatePhase1Completion(
   // Determine reason
   let reason = '';
   if (isComplete) {
-    reason = `Research complete: ${uniqueTools} tools used (${minTools} required)`;
+    reason = `Research complete: ${uniqueTools} tools used (${minTools} required), ${(strategicValidation.coverage * 100).toFixed(0)}% coverage`;
+  } else if (!hasEnoughTools) {
+    reason = `Need more tools: ${uniqueTools}/${minTools} unique tools used`;
+  } else if (!hasStrategicCoverage && strategicValidation.missingCritical.length > 0) {
+    reason = `Missing critical tools: ${strategicValidation.missingCritical.join(', ')}`;
   } else {
-    reason = `Need more research: ${uniqueTools}/${minTools} tools used, confidence ${confidence.toFixed(2)}`;
+    reason = `Need more research: confidence ${confidence.toFixed(2)}`;
   }
 
   return {
@@ -177,18 +216,41 @@ export function validatePhase1Completion(
 }
 
 /**
- * Suggest next tool to call based on what's been gathered
+ * Suggest next tool to call based on what's been gathered and tool strategy
  * 
  * Used when Phase 1 is incomplete to guide the agent
  */
 export function suggestNextTool(
   messages: Message[],
-  availableTools: string[]
+  availableTools: string[],
+  classification?: QueryClassification
 ): { suggestion: string; reasoning: string } {
   const toolCalls = extractToolCalls(messages);
   const calledTools = new Set(toolCalls);
 
-  // Suggest tools in priority order
+  // If we have classification, use strategic suggestion
+  if (classification) {
+    const strategy = generateToolStrategy('', classification, availableTools);
+    const context: ExecutionContext = {
+      toolsCalled: toolCalls,
+      messages,
+      classification,
+      phase: 'research',
+    };
+
+    const { tool, reasoning, priority } = require('./toolOrchestrator').suggestNextTool(
+      context,
+      strategy,
+      availableTools
+    );
+
+    return {
+      suggestion: tool,
+      reasoning: `${reasoning} (${priority} priority)`,
+    };
+  }
+
+  // Fallback to original priority-based suggestion
   const priorityTools = [
     'search_code',
     'file_summary',
