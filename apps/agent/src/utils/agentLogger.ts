@@ -11,7 +11,7 @@ import type {
   ToolCall,
   ToolResult,
   PhaseProgress,
-} from './types';
+} from '../core/types';
 
 /**
  * Check if debug mode is enabled

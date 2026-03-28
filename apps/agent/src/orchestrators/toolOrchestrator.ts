@@ -8,7 +8,7 @@
  * - Adapting strategy based on intermediate results
  */
 
-import type { Message, QueryClassification } from './types';
+import type { Message, QueryClassification } from '../core/types';
 
 /**
  * Tool execution strategy - defines how tools should be used

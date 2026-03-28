@@ -6,7 +6,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import type { Message, OpenAIToolCall } from './types';
+import type { Message, OpenAIToolCall } from '../core/types';
 
 export class AnthropicAdapter {
   private client: Anthropic;

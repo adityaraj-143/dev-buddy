@@ -5,7 +5,7 @@
  * to move from Phase 1 (Research) to Phase 2 (Analysis).
  */
 
-import type { Message, ResearchPhaseResult, QueryClassification } from './types';
+import type { Message, ResearchPhaseResult, QueryClassification } from '../core/types';
 import { 
   generateToolStrategy, 
   evaluateToolCoverage,

@@ -6,7 +6,7 @@
  */
 
 import OpenAI from 'openai';
-import type { Message } from './types';
+import type { Message } from '../core/types';
 
 export class GroqAdapter {
   private client: OpenAI;

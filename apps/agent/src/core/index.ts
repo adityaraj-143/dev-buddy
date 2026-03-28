@@ -5,8 +5,8 @@ import dotenv from 'dotenv';
 import path from 'path';
 
 import { loadConfig, validateConfig } from './agentConfig';
-import { GroqAdapter } from './groqAdapter';
-import { getFileResolutionContext, findRepoRoot } from './filePathResolver';
+import { GroqAdapter } from '../adapters/groqAdapter';
+import { getFileResolutionContext, findRepoRoot } from '../utils/filePathResolver';
 import {
   logQueryClassification,
   logPhaseProgress,
@@ -19,14 +19,14 @@ import {
   logPhase1ValidationDetails,
   logError,
   logInfo,
-} from './agentLogger';
-import { classifyQuery } from './queryClassifier';
-import { validatePhase1Completion, suggestNextTool, isEarlyExit } from './phaseValidator';
+} from '../utils/agentLogger';
+import { classifyQuery } from '../orchestrators/queryClassifier';
+import { validatePhase1Completion, suggestNextTool, isEarlyExit } from '../orchestrators/phaseValidator';
 import { 
   generateSystemPrompt, 
   PHASE_PROMPTS, 
   generateContextPrompt 
-} from './systemPrompt';
+} from '../utils/systemPrompt';
 import type {
   AgentConfig,
   Message,

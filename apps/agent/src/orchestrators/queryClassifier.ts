@@ -4,8 +4,8 @@
  * Uses keyword patterns and context markers to classify queries with confidence scores.
  */
 
-import type { QueryClassification, ClassificationMarkers } from './types';
-import { extractFileNamesFromQuery, resolveFilePath } from './filePathResolver';
+import type { QueryClassification, ClassificationMarkers } from '../core/types';
+import { extractFileNamesFromQuery, resolveFilePath } from '../utils/filePathResolver';
 
 /**
  * Keywords that indicate a codebase/project-specific query
