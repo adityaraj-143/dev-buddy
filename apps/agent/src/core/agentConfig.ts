@@ -61,6 +61,10 @@ export function loadConfig(): AgentConfig {
     config.maxTotalRounds = parseInt(process.env.AGENT_MAX_ROUNDS, 10);
   }
 
+  if (process.env.AGENT_PHASE1_MAX_ROUNDS) {
+    config.phase1MaxRounds = parseInt(process.env.AGENT_PHASE1_MAX_ROUNDS, 10);
+  }
+
   if (process.env.AGENT_MODEL_NAME) {
     config.modelName = process.env.AGENT_MODEL_NAME;
   }
